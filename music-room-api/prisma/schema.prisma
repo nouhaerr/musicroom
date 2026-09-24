@@ -1,0 +1,314 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+// =========================================================
+// Enums
+// =========================================================
+
+enum AuthProvider {
+  EMAIL
+  FACEBOOK
+  GOOGLE
+}
+
+enum Visibility {
+  PUBLIC
+  PRIVATE
+}
+
+// Music Track Vote (V.2.1) : qui a le droit de voter pour un événement
+enum VoteLicense {
+  EVERYONE       // tout le monde peut voter (défaut)
+  INVITED_ONLY   // seuls les invités peuvent voter
+  LOCATION_TIME  // seuls ceux présents dans la zone/le créneau peuvent voter
+}
+
+// Music Playlist Editor (V.2.3) : qui a le droit d'éditer une playlist
+enum EditLicense {
+  EVERYONE     // tout le monde peut éditer (défaut)
+  INVITED_ONLY // seuls les invités peuvent éditer
+}
+
+enum FriendRequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+enum Platform {
+  ANDROID
+  IOS
+}
+
+enum ResourceType {
+  PLAYLIST
+  PARTY
+}
+
+// =========================================================
+// Utilisateur, authentification, amis (V.1)
+// =========================================================
+
+model User {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  email           String       @unique
+  passwordHash    String?      // null si inscription via réseau social uniquement
+  authProvider    AuthProvider @default(EMAIL)
+  facebookId      String?      @unique
+  googleId        String?      @unique
+  emailVerifiedAt DateTime?    // rempli après validation du mail (obligatoire si authProvider = EMAIL)
+
+  name             String
+  publicInfo       Json? // visible par tout le monde
+  friendsOnlyInfo  Json? // visible par les amis uniquement
+  privateInfo      Json? // visible par l'utilisateur uniquement
+  musicPreferences Json?
+
+  // --- Relations ---
+  devices                Device[]
+  ownedPlaylists         Playlist[]          @relation("PlaylistOwner")
+  collaboratingPlaylists Playlist[]          @relation("PlaylistCollaborators")
+  ownedParties           Party[]             @relation("PartyOwner")
+  partyMemberships       Party[]             @relation("PartyMembers")
+  sentFriendRequests     FriendRequest[]     @relation("SentFriendRequests")
+  receivedFriendRequests FriendRequest[]     @relation("ReceivedFriendRequests")
+  friends                User[]              @relation("UserFriends")
+  friendOf               User[]              @relation("UserFriends")
+  votes                  Vote[]
+  invitationsSent        Invitation[]        @relation("InvitationsSent")
+  invitationsReceived    Invitation[]        @relation("InvitationsReceived")
+  delegationsGiven       ControlDelegation[] @relation("DelegationsGiven")
+  delegationsReceived    ControlDelegation[] @relation("DelegationsReceived")
+  addedPlaylistSongs     PlaylistSong[]
+  actionLogs             ActionLog[]
+
+  @@index([email])
+}
+
+// NB: "friends"/"friendOf" est une table dérivée pour accélérer les lectures.
+// Elle doit être synchronisée par la couche applicative quand un FriendRequest
+// passe à ACCEPTED (ajout symétrique des deux côtés). Ne jamais l'écrire sans
+// passer par la validation d'une FriendRequest.
+model FriendRequest {
+  id         String              @id @default(uuid())
+  senderId   String
+  receiverId String
+  status     FriendRequestStatus @default(PENDING)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  sender   User @relation("SentFriendRequests", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver User @relation("ReceivedFriendRequests", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, receiverId])
+  @@index([receiverId, status])
+}
+
+// =========================================================
+// Appareils, délégation de contrôle (V.2.2) et sécurité (V.6)
+// =========================================================
+
+model Device {
+  id         String   @id @default(uuid())
+  userId     String
+  platform   Platform
+  model      String
+  appVersion String
+  createdAt  DateTime @default(now())
+
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  controlDelegations ControlDelegation[]
+  actionLogs         ActionLog[]
+
+  @@index([userId])
+}
+
+// Licence de contrôle musique, spécifique à un appareil (comme demandé par le sujet)
+model ControlDelegation {
+  id              String    @id @default(uuid())
+  deviceId        String
+  delegatorUserId String
+  delegateUserId  String
+  grantedAt       DateTime  @default(now())
+  revokedAt       DateTime?
+
+  device    Device @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  delegator User   @relation("DelegationsGiven", fields: [delegatorUserId], references: [id], onDelete: Cascade)
+  delegate  User   @relation("DelegationsReceived", fields: [delegateUserId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+  @@index([delegateUserId])
+}
+
+// Toute action de l'application mobile doit générer un log ici (V.6)
+model ActionLog {
+  id         String    @id @default(uuid())
+  userId     String?
+  deviceId   String?
+  action     String
+  platform   Platform?
+  appVersion String?
+  metadata   Json?
+  createdAt  DateTime  @default(now())
+
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  device Device? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// =========================================================
+// Catalogue de morceaux
+// =========================================================
+
+model Song {
+  id           String   @id @default(uuid())
+  externalId   String?  @unique // id dans le SDK / catalogue externe (Spotify, Deezer...)
+  title        String
+  artist       String
+  durationSec  Int
+  sourceUri    String
+  thumbnailUrl String?
+  createdAt    DateTime @default(now())
+
+  playlistSongs PlaylistSong[]
+  partySongs    PartySong[]
+
+  @@index([title])
+}
+
+// =========================================================
+// Playlists collaboratives — Music Playlist Editor (V.2.3)
+// =========================================================
+
+model Playlist {
+  id          String      @id @default(uuid())
+  ownerId     String
+  name        String
+  visibility  Visibility  @default(PUBLIC)
+  editLicense EditLicense @default(EVERYONE)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  owner         User           @relation("PlaylistOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  collaborators User[]         @relation("PlaylistCollaborators")
+  songs         PlaylistSong[]
+  invitations   Invitation[]   @relation("PlaylistInvitations")
+
+  @@index([ownerId])
+}
+
+model PlaylistSong {
+  id         String   @id @default(uuid())
+  playlistId String
+  songId     String
+  position   Float    @default(0) // fractional indexing : pas besoin de réécrire toute la liste au déplacement
+  addedById  String
+  addedAt    DateTime @default(now())
+
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  song     Song     @relation(fields: [songId], references: [id], onDelete: Cascade)
+  addedBy  User     @relation(fields: [addedById], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, songId]) // un même morceau ne peut apparaître deux fois dans la playlist
+  @@index([playlistId, position])
+}
+
+// =========================================================
+// Événements de vote — Music Track Vote (V.2.1)
+// =========================================================
+
+model Party {
+  id              String      @id @default(uuid())
+  ownerId         String
+  name            String
+  visibility      Visibility  @default(PUBLIC)
+  voteLicense     VoteLicense @default(EVERYONE)
+  voteStartsAt    DateTime?   // requis seulement si voteLicense = LOCATION_TIME
+  voteEndsAt      DateTime?
+  latitude        Float?
+  longitude       Float?
+  radiusMeters    Int?
+  partyPlaylistId String      @unique
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  owner         User          @relation("PartyOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members       User[]        @relation("PartyMembers")
+  partyPlaylist PartyPlaylist @relation(fields: [partyPlaylistId], references: [id], onDelete: Cascade)
+  invitations   Invitation[]  @relation("PartyInvitations")
+
+  @@index([ownerId])
+}
+
+model PartyPlaylist {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  songs PartySong[]
+  party Party?
+}
+
+model PartySong {
+  id              String   @id @default(uuid())
+  songId          String
+  partyPlaylistId String
+  voteCount       Int      @default(0) // dénormalisé : mis à jour dans la même transaction que le Vote
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  song          Song          @relation(fields: [songId], references: [id], onDelete: Cascade)
+  partyPlaylist PartyPlaylist @relation(fields: [partyPlaylistId], references: [id], onDelete: Cascade)
+  votes         Vote[]
+
+  @@unique([partyPlaylistId, songId]) // un morceau ne peut être suggéré qu'une fois par événement
+  @@index([partyPlaylistId, voteCount])
+}
+
+model Vote {
+  id          String   @id @default(uuid())
+  partySongId String
+  userId      String
+  createdAt   DateTime @default(now())
+
+  partySong PartySong @relation(fields: [partySongId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([partySongId, userId]) // un utilisateur ne peut voter qu'une fois pour un même morceau
+  @@index([partySongId])
+}
+
+// =========================================================
+// Invitations (polymorphe : playlist privée ou party privée/à licence)
+// =========================================================
+
+model Invitation {
+  id            String       @id @default(uuid())
+  resourceType  ResourceType
+  playlistId    String?
+  partyId       String?
+  invitedById   String
+  invitedUserId String
+  createdAt     DateTime     @default(now())
+
+  playlist    Playlist? @relation("PlaylistInvitations", fields: [playlistId], references: [id], onDelete: Cascade)
+  party       Party?    @relation("PartyInvitations", fields: [partyId], references: [id], onDelete: Cascade)
+  invitedBy   User      @relation("InvitationsSent", fields: [invitedById], references: [id], onDelete: Cascade)
+  invitedUser User      @relation("InvitationsReceived", fields: [invitedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, invitedUserId])
+  @@unique([partyId, invitedUserId])
+  @@index([invitedUserId])
+}
