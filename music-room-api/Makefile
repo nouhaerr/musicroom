@@ -1,41 +1,40 @@
-.PHONY: install env db db-down migrate generate dev build start studio test fclean
+COMPOSE = docker compose
 
-# Installe toutes les dépendances du projet (node_modules) + génère le client Prisma
-install:
-	npm install
-	cp -n .env.example .env || true
-	npm run prisma:generate
+.PHONY: all up down logs ps migration test shell db-shell fclean re
 
-# Démarre la base Postgres locale (Docker)
-db:
-	docker compose up -d postgres
+all: up
 
-db-down:
-	docker compose down
+# First run only: never overwrites an existing .env
+.env:
+	cp .env.example .env
 
-# Applique les migrations Prisma sur la base locale
-migrate:
-	npm run prisma:migrate
+up: .env
+	$(COMPOSE) up --build -d --renew-anon-volumes
 
-generate:
-	npm run prisma:generate
+down:
+	$(COMPOSE) down
 
-dev: db
-	npm run start:dev
+logs:
+	$(COMPOSE) logs -f backend
 
-build:
-	npm run build
+ps:
+	$(COMPOSE) ps
 
-start:
-	npm run start:prod
-
-studio:
-	npm run prisma:studio
+# After a schema change (make up alone won't migrate): make migration name=add_x
+migration:
+	$(if $(name),,$(error usage: make migration name=<migration_name>))
+	$(COMPOSE) exec backend npx prisma migrate dev --name $(name)
 
 test:
-	npm test
+	$(COMPOSE) exec backend npm test
 
-# Nettoyage complet (node_modules, build, volumes de la base)
+shell:
+	$(COMPOSE) exec backend sh
+
+db-shell:
+	$(COMPOSE) exec postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'
+
 fclean:
-	rm -rf node_modules dist generated
-	docker compose down -v
+	$(COMPOSE) down -v --rmi local
+
+re: fclean all
