@@ -1,4 +1,5 @@
 # version: "3.9"
+name: music-room-api
 
 services:
   postgres:
