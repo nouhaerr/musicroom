@@ -10,6 +10,7 @@ import { DevicesModule } from './devices/devices.module';
 import { LoggingModule } from './common/logging/logging.module';
 import { PartiesModule } from './parties/parties.module';
 import { PlaylistsModule } from './playlists/playlists.module';
+import { SongsModule } from './songs/songs.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { PlaylistsModule } from './playlists/playlists.module';
     AuthModule,
     PartiesModule,
     PlaylistsModule,
+    SongsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
