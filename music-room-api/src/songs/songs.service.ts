@@ -50,4 +50,16 @@ export class SongsService {
       throw e;
     }
   }
+
+  // Fresh playable URL for a stored song: catalog preview URLs expire, so they're never stored
+  async getPreviewUrl(songId: string): Promise<{ songId: string; previewUrl: string }> {
+    const song = await this.prisma.song.findUnique({ where: { id: songId } });
+    if (!song) throw new NotFoundException('Song not found');
+    if (!song.externalId) throw new NotFoundException('This song has no catalog source');
+
+    const track = await this.provider.getTrack(song.externalId);
+    if (!track?.previewUrl) throw new NotFoundException('No preview available for this song');
+
+    return { songId: song.id, previewUrl: track.previewUrl };
+  }
 }
