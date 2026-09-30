@@ -1,36 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsNumber, IsOptional, IsString, IsUUID, Min, MinLength } from 'class-validator';
+import { IsNumber, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
 
 export class AddSongToPlaylistDto {
-  @ApiProperty()
+  @ApiProperty({ example: '67238732', description: 'Track id in the music catalog (from GET /songs/search)' })
   @IsString()
   @MinLength(1)
-  title!: string;
-
-  @ApiProperty()
-  @IsString()
-  @MinLength(1)
-  artist!: string;
-
-  @ApiProperty()
-  @IsInt()
-  @Min(1)
-  durationSec!: number;
-
-  @ApiProperty()
-  @IsString()
-  @MinLength(1)
-  sourceUri!: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  externalId?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  thumbnailUrl?: string;
+  @MaxLength(64)
+  externalId!: string;
 
   @ApiPropertyOptional({ description: 'Position cible (fractional indexing). Par défaut : à la fin.' })
   @IsOptional()

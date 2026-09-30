@@ -10,10 +10,14 @@ import { ResourceType, Visibility, VoteLicense, Party } from '../../generated/pr
 import { distanceMeters } from '../common/geo';
 import { CreatePartyDto } from './dto/create-party.dto';
 import { SuggestSongDto, VoteDto } from './dto/party-actions.dto';
+import { SongsService } from '../songs/songs.service';
 
 @Injectable()
 export class PartiesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly songsService: SongsService
+  ) {}
 
   // -----------------------------------------------------------------
   // Création / lecture
@@ -111,7 +115,7 @@ export class PartiesService {
     const party = await this.findByIdOrThrow(partyId);
     await this.assertCanView(party, userId);
 
-    const song = await this.findOrCreateSong(dto);
+    const song = await this.songsService.findOrCreateByExternalId(dto.externalId);
 
     try {
       return await this.prisma.partySong.create({
@@ -243,23 +247,6 @@ export class PartiesService {
       }),
     ]);
     return Boolean(member || invitation);
-  }
-
-  private async findOrCreateSong(dto: SuggestSongDto) {
-    if (dto.externalId) {
-      const existing = await this.prisma.song.findUnique({ where: { externalId: dto.externalId } });
-      if (existing) return existing;
-    }
-    return this.prisma.song.create({
-      data: {
-        externalId: dto.externalId,
-        title: dto.title,
-        artist: dto.artist,
-        durationSec: dto.durationSec,
-        sourceUri: dto.sourceUri,
-        thumbnailUrl: dto.thumbnailUrl,
-      },
-    });
   }
 
   private isUniqueConstraintError(e: unknown): boolean {
