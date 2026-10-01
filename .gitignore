@@ -1,0 +1,6 @@
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Secrets must never be committed, anywhere in the repo (subject V.8)
+.env

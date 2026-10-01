@@ -1,0 +1,7 @@
+node_modules
+generated
+dist
+.env
+*.log
+coverage
+.git
