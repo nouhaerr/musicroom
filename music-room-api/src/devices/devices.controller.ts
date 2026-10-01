@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { PaginationDto } from '../common/pagination.dto';
+import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { DevicesService } from './devices.service';
 import { RegisterDeviceDto } from './dto/register-device.dto';
@@ -23,7 +24,11 @@ export class DevicesController {
   }
 
   @Get()
-  list(@CurrentUser() user: PublicUser) {
-    return this.devicesService.listForUser(user.id);
+  list(@CurrentUser() user: PublicUser, @Query() query: PaginationDto) {
+    return this.devicesService.listForUser(user.id, query);
+  }
+  @Delete(':id')
+  remove(@CurrentUser() user: PublicUser, @Param('id') id: string) {
+    return this.devicesService.remove(user.id, id);
   }
 }

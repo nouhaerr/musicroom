@@ -1,3 +1,5 @@
+import { InvitationsService, activeInvitation } from '../invitations/invitations.service';
+import { PaginationDto, paginate } from '../common/pagination.dto';
 import {
   BadRequestException,
   ConflictException,
@@ -13,7 +15,7 @@ import { SuggestSongDto, VoteDto } from './dto/party-actions.dto';
 
 @Injectable()
 export class PartiesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly invitations: InvitationsService) {}
 
   // -----------------------------------------------------------------
   // Création / lecture
@@ -47,17 +49,24 @@ export class PartiesService {
     });
   }
 
-  findPublic() {
+  findPublic(userId: string, query: PaginationDto) {
     return this.prisma.party.findMany({
-      where: { visibility: Visibility.PUBLIC },
-      orderBy: { createdAt: 'desc' },
+      where: { OR: [
+        { visibility: Visibility.PUBLIC }, { ownerId: userId },
+        { invitations: { some: { invitedUserId: userId, ...activeInvitation } } },
+      ] },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], ...paginate(query),
     });
   }
 
-  findMine(userId: string) {
+  findMine(userId: string, query: PaginationDto) {
     return this.prisma.party.findMany({
-      where: { OR: [{ ownerId: userId }, { members: { some: { id: userId } } }] },
-      orderBy: { createdAt: 'desc' },
+      where: { OR: [{ ownerId: userId }, { members: { some: { id: userId } } }],
+        AND: [{ OR: [{ visibility: Visibility.PUBLIC }, { ownerId: userId },
+          { invitations: { some: { invitedUserId: userId, ...activeInvitation } } },
+        ] }],
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], ...paginate(query),
     });
   }
 
@@ -78,30 +87,16 @@ export class PartiesService {
   // -----------------------------------------------------------------
   // Membres / invitations
   // -----------------------------------------------------------------
-  async invite(partyId: string, inviterId: string, invitedUserId: string) {
-    const party = await this.findByIdOrThrow(partyId);
-    if (party.ownerId !== inviterId) {
-      throw new ForbiddenException("Seul le créateur de l'événement peut inviter");
-    }
-    return this.prisma.invitation.upsert({
-      where: { partyId_invitedUserId: { partyId, invitedUserId } },
-      create: {
-        resourceType: ResourceType.PARTY,
-        partyId,
-        invitedById: inviterId,
-        invitedUserId,
-      },
-      update: {},
-    });
+  invite(partyId: string, inviterId: string, invitedUserId: string) {
+    return this.invitations.invite(ResourceType.PARTY, partyId, inviterId, invitedUserId);
   }
 
-  async join(partyId: string, userId: string) {
-    const party = await this.findByIdOrThrow(partyId);
-    await this.assertCanView(party, userId);
-    return this.prisma.party.update({
-      where: { id: partyId },
-      data: { members: { connect: { id: userId } } },
-    });
+  removeInvite(id: string, ownerId: string, userId: string) {
+    return this.invitations.remove(ResourceType.PARTY, id, ownerId, userId);
+  }
+
+  join(partyId: string, userId: string) {
+    return this.invitations.joinParty(partyId, userId);
   }
 
   // -----------------------------------------------------------------
@@ -127,14 +122,14 @@ export class PartiesService {
     }
   }
 
-  async getQueue(partyId: string, userId: string) {
+  async getQueue(partyId: string, userId: string, query: PaginationDto) {
     const party = await this.findByIdOrThrow(partyId);
     await this.assertCanView(party, userId);
 
     return this.prisma.partySong.findMany({
       where: { partyPlaylistId: party.partyPlaylistId },
       include: { song: true, _count: { select: { votes: true } } },
-      orderBy: [{ voteCount: 'desc' }, { createdAt: 'asc' }],
+      orderBy: [{ voteCount: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }], ...paginate(query),
     });
   }
 
@@ -236,13 +231,10 @@ export class PartiesService {
   }
 
   private async isMemberOrInvited(partyId: string, userId: string): Promise<boolean> {
-    const [member, invitation] = await Promise.all([
-      this.prisma.party.findFirst({ where: { id: partyId, members: { some: { id: userId } } } }),
-      this.prisma.invitation.findUnique({
-        where: { partyId_invitedUserId: { partyId, invitedUserId: userId } },
-      }),
-    ]);
-    return Boolean(member || invitation);
+    const invitation = await this.prisma.invitation.findFirst({
+      where: { partyId, invitedUserId: userId, ...activeInvitation },
+    });
+    return Boolean(invitation);
   }
 
   private async findOrCreateSong(dto: SuggestSongDto) {

@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { paginate, PaginationDto } from '../common/pagination.dto';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Platform } from '../../generated/prisma';
 
@@ -19,7 +20,12 @@ export class DevicesService {
     return this.prisma.device.findUnique({ where: { id } });
   }
 
-  listForUser(userId: string) {
-    return this.prisma.device.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } });
+  listForUser(userId: string, query: PaginationDto) {
+    return this.prisma.device.findMany({ where: { userId }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], ...paginate(query) });
+  }
+  async remove(userId: string, id: string) {
+    const result = await this.prisma.device.deleteMany({ where: { id, userId } });
+    if (!result.count) throw new NotFoundException('Appareil introuvable');
+    return { deleted: true };
   }
 }

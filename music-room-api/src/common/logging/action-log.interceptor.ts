@@ -40,15 +40,15 @@ export class ActionLogInterceptor implements NestInterceptor {
       const deviceIdHeader = request.headers['x-device-id'];
       const deviceId = Array.isArray(deviceIdHeader) ? deviceIdHeader[0] : deviceIdHeader;
 
-      const device = deviceId
-        ? await this.prisma.device.findUnique({ where: { id: deviceId } })
+      const device = deviceId && request.user
+        ? await this.prisma.device.findFirst({ where: { id: deviceId, userId: request.user.id } })
         : null;
 
       await this.prisma.actionLog.create({
         data: {
           userId: request.user?.id,
           deviceId: device?.id,
-          action: `${request.method} ${request.route?.path ?? request.url}`,
+          action: `${request.method} ${request.route?.path ?? request.url.split('?')[0]}`,
           platform: device?.platform,
           appVersion: device?.appVersion,
           metadata: outcome === 'error' && err ? { error: err.message } : undefined,

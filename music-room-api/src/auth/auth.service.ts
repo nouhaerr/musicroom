@@ -1,3 +1,7 @@
+import { randomUUID } from 'crypto';
+import { PrismaService } from '../prisma/prisma.service';
+import { SessionsService, tokenHash } from './sessions.service';
+import { lockUsers } from '../common/locks';
 import {
   ConflictException,
   ForbiddenException,
@@ -25,6 +29,8 @@ export interface AuthTokens {
 @Injectable()
 export class AuthService {
   constructor(
+    private readonly prisma: PrismaService,
+    private readonly sessions: SessionsService,
     private readonly usersService: UsersService,
     private readonly mailService: MailService,
     private readonly jwtService: JwtService,
@@ -91,20 +97,16 @@ export class AuthService {
     return toPublicUser(user);
   }
 
-  login(user: PublicUser): AuthTokens & { user: PublicUser } {
-    return { ...this.issueTokens(user.id, user.email), user };
+  login(user: PublicUser) {
+    return this.sessions.create(user.id, user.updatedAt);
   }
 
-  // ---------------------------------------------------------------------
-  // Rafraîchissement de token
-  // ---------------------------------------------------------------------
-  async refreshTokens(refreshToken: string): Promise<AuthTokens & { user: PublicUser }> {
-    const payload = this.verifyPurposeToken(refreshToken, 'refresh');
-    const user = await this.usersService.findById(payload.sub);
-    if (!user) {
-      throw new UnauthorizedException('Utilisateur introuvable');
-    }
-    return { ...this.issueTokens(user.id, user.email), user: toPublicUser(user) };
+  refreshTokens(refreshToken: string) {
+    return this.sessions.refresh(refreshToken);
+  }
+
+  logout(userId: string, sessionId: string) {
+    return this.sessions.logout(userId, sessionId);
   }
 
   // ---------------------------------------------------------------------
@@ -114,6 +116,10 @@ export class AuthService {
     const user = await this.usersService.findByEmail(email);
     if (user && user.passwordHash) {
       const token = this.signPurposeToken(user, 'password-reset', '30m');
+      const { exp } = this.jwtService.decode<{ exp: number }>(token);
+      await this.prisma.passwordResetToken.create({ data: {
+        userId: user.id, tokenHash: tokenHash(token), expiresAt: new Date(exp * 1000),
+      } });
       await this.mailService.sendPasswordResetEmail(user.email, token);
     }
     // Réponse générique quoi qu'il arrive côté contrôleur (anti-énumération)
@@ -122,7 +128,17 @@ export class AuthService {
   async resetPassword(token: string, newPassword: string): Promise<void> {
     const payload = this.verifyPurposeToken(token, 'password-reset');
     const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
-    await this.usersService.updatePassword(payload.sub, passwordHash);
+    await this.prisma.$transaction(async tx => {
+      await lockUsers(tx, [payload.sub]);
+      const consumed = await tx.passwordResetToken.updateMany({
+        where: { userId: payload.sub, tokenHash: tokenHash(token), usedAt: null, expiresAt: { gt: new Date() } },
+        data: { usedAt: new Date() },
+      });
+      if (consumed.count !== 1) throw new UnauthorizedException('Lien expiré ou déjà utilisé');
+      await tx.user.update({ where: { id: payload.sub }, data: { passwordHash } });
+      await tx.passwordResetToken.updateMany({ where: { userId: payload.sub, usedAt: null }, data: { usedAt: new Date() } });
+      await this.sessions.revokeAll(tx, payload.sub);
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -135,7 +151,7 @@ export class AuthService {
     if (!user) {
       user = await this.usersService.findByEmail(profile.email);
       if (user) {
-        user = await this.usersService.linkFacebookAccount(user.id, profile.providerId);
+        throw new ConflictException('Connectez-vous au compte existant puis liez le compte social explicitement');
       } else {
         user = await this.usersService.createFromSocial({
           email: profile.email,
@@ -146,7 +162,7 @@ export class AuthService {
       }
     }
 
-    return { ...this.issueTokens(user.id, user.email), user: toPublicUser(user) };
+    return this.sessions.create(user.id);
   }
 
   async loginWithGoogle(idToken: string): Promise<AuthTokens & { user: PublicUser }> {
@@ -156,7 +172,7 @@ export class AuthService {
     if (!user) {
       user = await this.usersService.findByEmail(profile.email);
       if (user) {
-        user = await this.usersService.linkGoogleAccount(user.id, profile.providerId);
+        throw new ConflictException('Connectez-vous au compte existant puis liez le compte social explicitement');
       } else {
         user = await this.usersService.createFromSocial({
           email: profile.email,
@@ -167,7 +183,7 @@ export class AuthService {
       }
     }
 
-    return { ...this.issueTokens(user.id, user.email), user: toPublicUser(user) };
+    return this.sessions.create(user.id);
   }
 
   // Lier un compte réseau social à un compte déjà authentifié (V.1 : "the
@@ -195,26 +211,12 @@ export class AuthService {
   // ---------------------------------------------------------------------
   // Helpers JWT
   // ---------------------------------------------------------------------
-  private issueTokens(userId: string, email: string): AuthTokens {
-    const accessToken = this.signToken(
-      { sub: userId, email, type: 'access' },
-      this.config.get<string>('JWT_ACCESS_SECRET', 'dev_access_secret'),
-      this.config.get<string>('JWT_ACCESS_EXPIRES_IN', '15m'),
-    );
-    const refreshToken = this.signToken(
-      { sub: userId, email, type: 'refresh' },
-      this.config.get<string>('JWT_REFRESH_SECRET', 'dev_refresh_secret'),
-      this.config.get<string>('JWT_REFRESH_EXPIRES_IN', '7d'),
-    );
-    return { accessToken, refreshToken };
-  }
-
   private signPurposeToken(user: User, type: TokenType, expiresIn: string): string {
     const secret =
       type === 'refresh'
         ? this.config.get<string>('JWT_REFRESH_SECRET', 'dev_refresh_secret')
         : this.config.get<string>('JWT_ACCESS_SECRET', 'dev_access_secret');
-    return this.signToken({ sub: user.id, email: user.email, type }, secret, expiresIn);
+    return this.signToken({ sub: user.id, email: user.email, type, jti: randomUUID() }, secret, expiresIn);
   }
 
   private signToken(payload: JwtPayload, secret: string, expiresIn: string): string {
@@ -229,7 +231,7 @@ export class AuthService {
 
     let payload: JwtPayload;
     try {
-      payload = this.jwtService.verify<JwtPayload>(token, { secret });
+      payload = this.jwtService.verify<JwtPayload>(token, { secret, algorithms: ['HS256'] });
     } catch {
       throw new UnauthorizedException('Token invalide ou expiré');
     }

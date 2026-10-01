@@ -1,4 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { publicProfileSelect, toPublicUser } from './user.mapper';
+import { SearchUsersDto } from './dto/search-users.dto';
+import { paginate } from '../common/pagination.dto';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthProvider, Prisma } from '../../generated/prisma';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -73,16 +76,39 @@ export class UsersService {
     return this.prisma.user.update({ where: { id: userId }, data: { passwordHash } });
   }
 
-  // updateProfile(userId: string, data: Prisma.UserUpdateInput) {
-  //   return this.prisma.user.update({ where: { id: userId }, data });
-  // }
+  search(query: SearchUsersDto) {
+    return this.prisma.user.findMany({
+      where: {
+        ...(query.q ? { name: { contains: query.q.trim(), mode: 'insensitive' } } : {}),
+        ...(query.genre ? { musicPreferences: { has: query.genre } } : {}),
+      },
+      select: publicProfileSelect,
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      ...paginate(query),
+    });
+  }
+
+  async getProfile(id: string, viewerId?: string) {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('Utilisateur introuvable');
+    if (id === viewerId) return toPublicUser(user);
+    const friend = viewerId ? await this.prisma.user.findFirst({
+      where: { id, friends: { some: { id: viewerId } } }, select: { id: true },
+    }) : null;
+    return {
+      id: user.id, name: user.name, publicInfo: user.publicInfo,
+      musicPreferences: user.musicPreferences,
+      ...(friend ? { friendsOnlyInfo: user.friendsOnlyInfo } : {}),
+    };
+  }
+
   updateProfile(userId: string, dto: UpdateProfileDto) {
       const data: Prisma.UserUpdateInput = {
         ...dto,
         publicInfo: dto.publicInfo as Prisma.InputJsonValue | undefined,
         friendsOnlyInfo: dto.friendsOnlyInfo as Prisma.InputJsonValue | undefined,
         privateInfo: dto.privateInfo as Prisma.InputJsonValue | undefined,
-        musicPreferences: dto.musicPreferences as Prisma.InputJsonValue | undefined,
+        musicPreferences: dto.musicPreferences,
       };
 
       return this.prisma.user.update({

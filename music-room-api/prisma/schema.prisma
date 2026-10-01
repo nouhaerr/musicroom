@@ -42,6 +42,13 @@ enum FriendRequestStatus {
   DECLINED
 }
 
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  REVOKED
+}
+
 enum Platform {
   ANDROID
   IOS
@@ -72,9 +79,11 @@ model User {
   publicInfo       Json? // visible par tout le monde
   friendsOnlyInfo  Json? // visible par les amis uniquement
   privateInfo      Json? // visible par l'utilisateur uniquement
-  musicPreferences Json?
+  musicPreferences String[] @default([])
 
   // --- Relations ---
+  sessions               AuthSession[]
+  passwordResetTokens    PasswordResetToken[]
   devices                Device[]
   ownedPlaylists         Playlist[]          @relation("PlaylistOwner")
   collaboratingPlaylists Playlist[]          @relation("PlaylistCollaborators")
@@ -93,6 +102,7 @@ model User {
   actionLogs             ActionLog[]
 
   @@index([email])
+  @@index([musicPreferences], type: Gin)
 }
 
 // NB: "friends"/"friendOf" est une table dérivée pour accélérer les lectures.
@@ -296,6 +306,7 @@ model Vote {
 
 model Invitation {
   id            String       @id @default(uuid())
+  status        InvitationStatus @default(PENDING)
   resourceType  ResourceType
   playlistId    String?
   partyId       String?
@@ -311,4 +322,44 @@ model Invitation {
   @@unique([playlistId, invitedUserId])
   @@unique([partyId, invitedUserId])
   @@index([invitedUserId])
+}
+
+// A session identifies one login; access JWTs refer to it through `sid`.
+model AuthSession {
+  id            String   @id @default(uuid())
+  userId        String
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  user          User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+  @@index([userId, revokedAt])
+}
+
+// Consumed hashes are retained to detect replay, never store bearer tokens.
+model RefreshToken {
+  id         String @id @default(uuid())
+  sessionId  String
+  tokenHash  String @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  session    AuthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  @@index([sessionId])
+}
+
+model PasswordResetToken {
+  id        String @id @default(uuid())
+  userId    String
+  tokenHash String @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+}
+
+// Retained for manual recovery when old preferences were arbitrary JSON.
+model MusicPreferencesArchive {
+  userId           String @id
+  musicPreferences Json
+  @@map("_MusicPreferencesArchive")
 }

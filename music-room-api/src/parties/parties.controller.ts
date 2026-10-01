@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { PaginationDto } from '../common/pagination.dto';
+import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PartiesService } from './parties.service';
 import { CreatePartyDto } from './dto/create-party.dto';
@@ -20,13 +21,13 @@ export class PartiesController {
   }
 
   @Get()
-  findPublic() {
-    return this.partiesService.findPublic();
+  findPublic(@CurrentUser() user: PublicUser, @Query() query: PaginationDto) {
+    return this.partiesService.findPublic(user.id, query);
   }
 
   @Get('mine')
-  findMine(@CurrentUser() user: PublicUser) {
-    return this.partiesService.findMine(user.id);
+  findMine(@CurrentUser() user: PublicUser, @Query() query: PaginationDto) {
+    return this.partiesService.findMine(user.id, query);
   }
 
   @Get(':id')
@@ -45,8 +46,8 @@ export class PartiesController {
   }
 
   @Get(':id/queue')
-  getQueue(@CurrentUser() user: PublicUser, @Param('id') id: string) {
-    return this.partiesService.getQueue(id, user.id);
+  getQueue(@CurrentUser() user: PublicUser, @Param('id') id: string, @Query() query: PaginationDto) {
+    return this.partiesService.getQueue(id, user.id, query);
   }
 
   @Post(':id/songs')
@@ -75,5 +76,9 @@ export class PartiesController {
     @Param('partySongId') partySongId: string,
   ) {
     return this.partiesService.removeVote(id, partySongId, user.id);
+  }
+  @Delete(':id/invitations/:userId')
+  removeInvite(@CurrentUser() user: PublicUser, @Param('id') id: string, @Param('userId') userId: string) {
+    return this.partiesService.removeInvite(id, user.id, userId);
   }
 }
