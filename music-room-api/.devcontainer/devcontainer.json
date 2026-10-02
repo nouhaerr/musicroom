@@ -1,0 +1,13 @@
+{
+  "name": "music-room-api",
+  "dockerComposeFile": ["../docker-compose.yml"],
+  "service": "backend",
+  "workspaceFolder": "/usr/src/app",
+  "remoteUser": "node",
+  "shutdownAction": "none",
+  "customizations": {
+    "vscode": {
+      "extensions": ["Prisma.prisma"]
+    }
+  }
+}
