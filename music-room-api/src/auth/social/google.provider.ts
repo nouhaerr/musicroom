@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SocialProfile } from './facebook.provider';
 
@@ -8,12 +8,21 @@ import { SocialProfile } from './facebook.provider';
 @Injectable()
 export class GoogleProvider {
   private readonly clientId: string;
+  private readonly enabled: boolean;
   constructor(config: ConfigService) {
+    const enabled = config.get<string>('GOOGLE_AUTH_ENABLED', 'true');
+    if (enabled !== 'true' && enabled !== 'false') {
+      throw new Error('GOOGLE_AUTH_ENABLED doit valoir true ou false');
+    }
+    this.enabled = enabled === 'true';
     this.clientId = config.get<string>('GOOGLE_CLIENT_ID')?.trim() ?? '';
-    if (!this.clientId) throw new Error('GOOGLE_CLIENT_ID est requis');
+    if (this.enabled && !this.clientId) throw new Error('GOOGLE_CLIENT_ID est requis');
   }
 
   async verify(idToken: string): Promise<SocialProfile> {
+    if (!this.enabled) {
+      throw new ServiceUnavailableException('La connexion Google est désactivée');
+    }
     const res = await fetch(
       `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
       { signal: AbortSignal.timeout(10_000) },

@@ -2,14 +2,34 @@ import { ConfigService } from '@nestjs/config';
 import { GoogleProvider } from './google.provider';
 import { FacebookProvider } from './facebook.provider';
 
-const config = new ConfigService({ GOOGLE_CLIENT_ID: 'our-google-app', FACEBOOK_CLIENT_ID: 'our-facebook-app', FACEBOOK_CLIENT_SECRET: 'test-secret' });
+// Provider tests must not inherit OAuth settings loaded from the developer's .env.
+function testConfig(values: Record<string, string>) {
+  return { get: (key: string, fallback?: unknown) => values[key] ?? fallback } as unknown as ConfigService;
+}
+
+const config = testConfig({ GOOGLE_CLIENT_ID: 'our-google-app', FACEBOOK_CLIENT_ID: 'our-facebook-app', FACEBOOK_CLIENT_SECRET: 'test-secret' });
 const response = (data: unknown, ok = true) => ({ ok, json: async () => data }) as Response;
 
 describe('Social provider identity checks', () => {
   afterEach(() => jest.restoreAllMocks());
 
   it.each(['', '   '])('fails startup for missing Google audience %j', value => {
-    expect(() => new GoogleProvider(new ConfigService({ GOOGLE_CLIENT_ID: value }))).toThrow('GOOGLE_CLIENT_ID');
+    expect(() => new GoogleProvider(testConfig({ GOOGLE_CLIENT_ID: value }))).toThrow('GOOGLE_CLIENT_ID');
+  });
+
+  it('allows explicit disablement without a client ID and refuses Google requests', async () => {
+    const fetch = jest.spyOn(global, 'fetch');
+    const provider = new GoogleProvider(testConfig({ GOOGLE_AUTH_ENABLED: 'false' }));
+    await expect(provider.verify('token')).rejects.toMatchObject({ status: 503 });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('still requires a client ID when explicitly enabled', () => {
+    expect(() => new GoogleProvider(testConfig({ GOOGLE_AUTH_ENABLED: 'true' }))).toThrow('GOOGLE_CLIENT_ID');
+  });
+
+  it('rejects invalid enablement values rather than silently disabling checks', () => {
+    expect(() => new GoogleProvider(testConfig({ GOOGLE_AUTH_ENABLED: 'yes' }))).toThrow('GOOGLE_AUTH_ENABLED');
   });
 
   it.each([

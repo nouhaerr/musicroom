@@ -236,7 +236,7 @@ export class AuthService {
       throw new UnauthorizedException('Token invalide ou expiré');
     }
 
-    if (payload.type !== expectedType) {
+    if (payload.type !== expectedType || typeof payload.sub !== 'string' || !payload.sub) {
       throw new UnauthorizedException('Type de token invalide');
     }
     return payload;

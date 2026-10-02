@@ -1,7 +1,7 @@
 import { publicProfileSelect, toPublicUser } from './user.mapper';
 import { SearchUsersDto } from './dto/search-users.dto';
 import { paginate } from '../common/pagination.dto';
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthProvider, Prisma } from '../../generated/prisma';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -27,14 +27,14 @@ export class UsersService {
   }
 
   createWithPassword(data: { email: string; name: string; passwordHash: string }) {
-    return this.prisma.user.create({
+    return this.withUniqueConflict(() => this.prisma.user.create({
       data: {
         email: data.email,
         name: data.name,
         passwordHash: data.passwordHash,
         authProvider: AuthProvider.EMAIL,
       },
-    });
+    }));
   }
 
   createFromSocial(data: {
@@ -44,7 +44,7 @@ export class UsersService {
     facebookId?: string;
     googleId?: string;
   }) {
-    return this.prisma.user.create({
+    return this.withUniqueConflict(() => this.prisma.user.create({
       data: {
         email: data.email,
         name: data.name,
@@ -54,15 +54,15 @@ export class UsersService {
         // Un compte créé via un réseau social est considéré comme vérifié d'office
         emailVerifiedAt: new Date(),
       },
-    });
+    }));
   }
 
   linkFacebookAccount(userId: string, facebookId: string) {
-    return this.prisma.user.update({ where: { id: userId }, data: { facebookId } });
+    return this.withUniqueConflict(() => this.prisma.user.update({ where: { id: userId }, data: { facebookId } }));
   }
 
   linkGoogleAccount(userId: string, googleId: string) {
-    return this.prisma.user.update({ where: { id: userId }, data: { googleId } });
+    return this.withUniqueConflict(() => this.prisma.user.update({ where: { id: userId }, data: { googleId } }));
   }
 
   markEmailVerified(userId: string) {
@@ -103,17 +103,25 @@ export class UsersService {
   }
 
   updateProfile(userId: string, dto: UpdateProfileDto) {
-      const data: Prisma.UserUpdateInput = {
-        ...dto,
-        publicInfo: dto.publicInfo as Prisma.InputJsonValue | undefined,
-        friendsOnlyInfo: dto.friendsOnlyInfo as Prisma.InputJsonValue | undefined,
-        privateInfo: dto.privateInfo as Prisma.InputJsonValue | undefined,
-        musicPreferences: dto.musicPreferences,
-      };
+    const data: Prisma.UserUpdateInput = {
+      ...dto,
+      publicInfo: dto.publicInfo as Prisma.InputJsonValue | undefined,
+      friendsOnlyInfo: dto.friendsOnlyInfo as Prisma.InputJsonValue | undefined,
+      privateInfo: dto.privateInfo as Prisma.InputJsonValue | undefined,
+      musicPreferences: dto.musicPreferences,
+    };
 
-      return this.prisma.user.update({
-        where: { id: userId },
-        data,
-      });
+    return this.prisma.user.update({ where: { id: userId }, data });
+  }
+
+  private async withUniqueConflict<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('Cet email ou compte social est déjà utilisé');
+      }
+      throw error;
+    }
   }
 }
