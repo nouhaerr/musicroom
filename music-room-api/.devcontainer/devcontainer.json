@@ -7,7 +7,7 @@
   "shutdownAction": "none",
   "customizations": {
     "vscode": {
-      "extensions": ["Prisma.prisma"]
+      "extensions": ["Prisma.prisma", "EditorConfig.EditorConfig"]
     }
   }
 }

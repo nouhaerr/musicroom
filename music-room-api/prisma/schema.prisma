@@ -194,6 +194,7 @@ model Song {
 
   playlistSongs PlaylistSong[]
   partySongs    PartySong[]
+  nowPlayingIn  Party[]
 
   @@index([title])
 }
@@ -254,6 +255,10 @@ model Party {
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
+  nowPlayingSongId    String?     // which song is playing (null = nothing yet)
+  nowPlayingStartedAt DateTime?   // when it started
+
+  nowPlaying    Song?         @relation(fields: [nowPlayingSongId], references: [id], onDelete: SetNull)
   owner         User          @relation("PartyOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   members       User[]        @relation("PartyMembers")
   partyPlaylist PartyPlaylist @relation(fields: [partyPlaylistId], references: [id], onDelete: Cascade)
@@ -281,6 +286,7 @@ model PartySong {
 
   song          Song          @relation(fields: [songId], references: [id], onDelete: Cascade)
   partyPlaylist PartyPlaylist @relation(fields: [partyPlaylistId], references: [id], onDelete: Cascade)
+
   votes         Vote[]
 
   @@unique([partyPlaylistId, songId]) // un morceau ne peut être suggéré qu'une fois par événement
