@@ -1,3 +1,5 @@
+import { InvitationsService, activeInvitation } from '../invitations/invitations.service';
+import { PaginationDto, paginate } from '../common/pagination.dto';
 import {
   ConflictException,
   ForbiddenException,
@@ -14,7 +16,8 @@ import { AddSongToPlaylistDto, MoveSongDto } from './dto/playlist-actions.dto';
 export class PlaylistsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly songsService: SongsService
+    private readonly invitations: InvitationsService,
+    private readonly songsService: SongsService,
   ) {}
 
   create(ownerId: string, dto: CreatePlaylistDto) {
@@ -28,17 +31,24 @@ export class PlaylistsService {
     });
   }
 
-  findPublic() {
+  findPublic(userId: string, query: PaginationDto) {
     return this.prisma.playlist.findMany({
-      where: { visibility: Visibility.PUBLIC },
-      orderBy: { createdAt: 'desc' },
+      where: { OR: [
+        { visibility: Visibility.PUBLIC }, { ownerId: userId },
+        { invitations: { some: { invitedUserId: userId, ...activeInvitation } } },
+      ] },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], ...paginate(query),
     });
   }
 
-  findMine(userId: string) {
+  findMine(userId: string, query: PaginationDto) {
     return this.prisma.playlist.findMany({
-      where: { OR: [{ ownerId: userId }, { collaborators: { some: { id: userId } } }] },
-      orderBy: { createdAt: 'desc' },
+      where: { OR: [{ ownerId: userId }, { collaborators: { some: { id: userId } } }],
+        AND: [{ OR: [{ visibility: Visibility.PUBLIC }, { ownerId: userId },
+          { invitations: { some: { invitedUserId: userId, ...activeInvitation } } },
+        ] }],
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], ...paginate(query),
     });
   }
 
@@ -56,42 +66,26 @@ export class PlaylistsService {
     return playlist;
   }
 
-  // Inviter quelqu'un rend la playlist visible ET éditable pour lui : pas de
-  // distinction fine ici, contrairement aux Party (voir note du service).
-  async invite(playlistId: string, inviterId: string, invitedUserId: string) {
-    const playlist = await this.findByIdOrThrow(playlistId);
-    if (playlist.ownerId !== inviterId) {
-      throw new ForbiddenException('Seul le propriétaire peut inviter des collaborateurs');
-    }
+  // Une invitation rend la playlist visible ; son acceptation ajoute le collaborateur.
+  invite(playlistId: string, inviterId: string, invitedUserId: string) {
+    return this.invitations.invite(ResourceType.PLAYLIST, playlistId, inviterId, invitedUserId);
+  }
 
-    await this.prisma.invitation.upsert({
-      where: { playlistId_invitedUserId: { playlistId, invitedUserId } },
-      create: {
-        resourceType: ResourceType.PLAYLIST,
-        playlistId,
-        invitedById: inviterId,
-        invitedUserId,
-      },
-      update: {},
-    });
-
-    return this.prisma.playlist.update({
-      where: { id: playlistId },
-      data: { collaborators: { connect: { id: invitedUserId } } },
-    });
+  removeInvite(id: string, ownerId: string, userId: string) {
+    return this.invitations.remove(ResourceType.PLAYLIST, id, ownerId, userId);
   }
 
   // -----------------------------------------------------------------
   // Morceaux
   // -----------------------------------------------------------------
-  async getSongs(playlistId: string, userId: string) {
+  async getSongs(playlistId: string, userId: string, query: PaginationDto) {
     const playlist = await this.findByIdOrThrow(playlistId);
     await this.assertCanView(playlist, userId);
 
     return this.prisma.playlistSong.findMany({
       where: { playlistId },
       include: { song: true, addedBy: { select: { id: true, name: true } } },
-      orderBy: { position: 'asc' },
+      orderBy: [{ position: 'asc' }, { id: 'asc' }], ...paginate(query),
     });
   }
 
@@ -159,7 +153,9 @@ export class PlaylistsService {
   private async assertCanView(playlist: Playlist, userId: string): Promise<void> {
     if (playlist.visibility === Visibility.PUBLIC) return;
     if (playlist.ownerId === userId) return;
-    if (await this.isCollaborator(playlist.id, userId)) return;
+    if (await this.prisma.invitation.findFirst({
+      where: { playlistId: playlist.id, invitedUserId: userId, ...activeInvitation },
+    })) return;
     throw new ForbiddenException('Cette playlist est privée');
   }
 

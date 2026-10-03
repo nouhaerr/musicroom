@@ -1,3 +1,5 @@
+import { FriendsModule } from './friends/friends.module';
+import { InvitationsModule } from './invitations/invitations.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
@@ -25,6 +27,8 @@ import { SongsModule } from './songs/songs.module';
     UsersModule,
     DevicesModule,
     AuthModule,
+    FriendsModule,
+    InvitationsModule,
     PartiesModule,
     PlaylistsModule,
     SongsModule,

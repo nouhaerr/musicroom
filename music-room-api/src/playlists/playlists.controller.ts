@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { PaginationDto } from '../common/pagination.dto';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PlaylistsService } from './playlists.service';
 import { CreatePlaylistDto } from './dto/create-playlist.dto';
@@ -20,13 +21,13 @@ export class PlaylistsController {
   }
 
   @Get()
-  findPublic() {
-    return this.playlistsService.findPublic();
+  findPublic(@CurrentUser() user: PublicUser, @Query() query: PaginationDto) {
+    return this.playlistsService.findPublic(user.id, query);
   }
 
   @Get('mine')
-  findMine(@CurrentUser() user: PublicUser) {
-    return this.playlistsService.findMine(user.id);
+  findMine(@CurrentUser() user: PublicUser, @Query() query: PaginationDto) {
+    return this.playlistsService.findMine(user.id, query);
   }
 
   @Get(':id')
@@ -44,8 +45,8 @@ export class PlaylistsController {
   }
 
   @Get(':id/songs')
-  getSongs(@CurrentUser() user: PublicUser, @Param('id') id: string) {
-    return this.playlistsService.getSongs(id, user.id);
+  getSongs(@CurrentUser() user: PublicUser, @Param('id') id: string, @Query() query: PaginationDto) {
+    return this.playlistsService.getSongs(id, user.id, query);
   }
 
   @Post(':id/songs')
@@ -74,5 +75,9 @@ export class PlaylistsController {
     @Param('playlistSongId') playlistSongId: string,
   ) {
     return this.playlistsService.removeSong(id, playlistSongId, user.id);
+  }
+  @Delete(':id/invitations/:userId')
+  removeInvite(@CurrentUser() user: PublicUser, @Param('id') id: string, @Param('userId') userId: string) {
+    return this.playlistsService.removeInvite(id, user.id, userId);
   }
 }

@@ -1,3 +1,4 @@
+import { SessionsService } from './sessions.service';
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
@@ -20,7 +21,7 @@ import { MailModule } from '../mail/mail.module';
     JwtModule.register({}),
   ],
   controllers: [AuthController],
-  providers: [AuthService, LocalStrategy, JwtStrategy, FacebookProvider, GoogleProvider],
+  providers: [SessionsService, AuthService, LocalStrategy, JwtStrategy, FacebookProvider, GoogleProvider],
   exports: [AuthService],
 })
 export class AuthModule {}
