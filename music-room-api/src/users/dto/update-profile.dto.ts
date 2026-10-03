@@ -1,31 +1,37 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsObject, IsOptional, IsString, MinLength } from 'class-validator';
-import { Prisma } from '../../../generated/prisma';;
+import { ArrayMaxSize, ArrayUnique, IsArray, IsObject, IsString, MaxLength, MinLength, ValidateIf } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class UpdateProfileDto {
   @ApiPropertyOptional()
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @MinLength(1)
   name?: string;
 
   @ApiPropertyOptional({ description: 'Informations visibles par tous' })
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsObject()
-  publicInfo?: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput;
+  publicInfo?: Record<string, unknown>;
 
   @ApiPropertyOptional({ description: 'Informations visibles par les amis uniquement' })
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsObject()
   friendsOnlyInfo?: Record<string, unknown>;
 
   @ApiPropertyOptional({ description: "Informations visibles par l'utilisateur uniquement" })
-  @IsOptional()
+  @ValidateIf((_object, value) => value !== undefined)
   @IsObject()
   privateInfo?: Record<string, unknown>;
 
-  @ApiPropertyOptional({ description: 'Préférences musicales' })
-  @IsOptional()
-  @IsObject()
-  musicPreferences?: Record<string, unknown>;
+  @ApiPropertyOptional({ type: [String], example: ['jazz', 'rock'] })
+  @ValidateIf((_object, value) => value !== undefined)
+  @Transform(({ value }) => Array.isArray(value) ? value.map(v => typeof v === 'string' ? v.trim().toLowerCase() : v) : value)
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ArrayUnique()
+  @IsString({ each: true })
+  @MinLength(1, { each: true })
+  @MaxLength(50, { each: true })
+  musicPreferences?: string[];
 }

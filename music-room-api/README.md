@@ -7,29 +7,47 @@ logs d'action, et les deux services **Music Track Vote** (`parties`) et
 ## Démarrage rapide
 
 ```bash
-make install   # npm install + copie .env.example -> .env + prisma generate
-make db        # démarre Postgres via Docker
-make migrate   # applique le schéma Prisma sur la base
-make dev       # démarre l'API en mode watch (http://localhost:3000)
+cd music-room-api               # depuis la racine du dépôt
+cp .env.example .env            # première installation uniquement
+# Configurer .env (voir ci-dessous), puis démarrer Docker Desktop / Docker Engine.
+make                           # construit, applique les migrations, démarre l'API
+make logs                      # suit les logs du backend
 ```
 
 Documentation Swagger générée automatiquement : http://localhost:3000/docs
 
 ## Configuration
 
-Éditez `.env` (créé automatiquement par `make install` à partir de
+Éditez `.env` (également créé automatiquement par `make` s’il est absent, à partir de
 `.env.example`) :
-- `DATABASE_URL` : déjà prête pour le Postgres du `docker-compose.yml`
+- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` : configuration PostgreSQL.
+- `DATABASE_URL` : URL Prisma, avec l'hôte `postgres` depuis Docker. Les identifiants
+  de l'URL doivent être encodés si le mot de passe contient des caractères réservés.
+  Dans ce cas, remplacer l'interpolation du modèle par l'URL correctement encodée ;
+  conserver le mot de passe brut dans `POSTGRES_PASSWORD`.
+- Un volume PostgreSQL existant conserve ses identifiants : changer `.env` ne
+  change pas le mot de passe déjà enregistré en base.
 - `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` : à changer avant tout déploiement
 - `FACEBOOK_CLIENT_ID` / `FACEBOOK_CLIENT_SECRET` : depuis
   https://developers.facebook.com/apps
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` : depuis
   https://console.cloud.google.com/apis/credentials
 
-Tant que `MAIL_HOST` n'est pas renseigné, les emails de vérification et de
-réinitialisation de mot de passe sont simplement affichés dans les logs du
-serveur (pratique en dev, à remplacer par un vrai transport SMTP en prod —
-voir `src/mail/mail.service.ts`).
+Sans client OAuth Google en développement, ajouter `GOOGLE_AUTH_ENABLED=false`
+dans `.env`. Les routes de connexion et de liaison Google renvoient alors 503 ;
+l'authentification par email reste disponible. Par défaut, Google est activé et
+l'absence de `GOOGLE_CLIENT_ID` empêche le démarrage. Après modification de `.env`,
+recréer le backend avec `docker compose up -d --no-deps --force-recreate backend`.
+
+Le service mail affiche actuellement les liens dans les logs. Renseigner
+`MAIL_HOST` ne suffit pas : un vrai transport SMTP reste à implémenter.
+
+Routes, comportement de sécurité, pagination, migrations et tests A1–A5 :
+[guide authentification et utilisateurs](docs/AUTH-USERS.md).
+
+`make down` arrête les services en conservant les données. `make fclean` et
+`make re` suppriment les volumes et les données PostgreSQL. Pour créer une
+migration après une modification du schéma : `make migration name=nom_modification`.
 
 ## Routes principales
 
@@ -96,10 +114,4 @@ voir `src/mail/mail.service.ts`).
   déplacements aux autres clients connectés (actuellement REST pur : il faut
   poller `/parties/:id/queue` et `/playlists/:id/songs`)
 - Music Control Delegation (modèle `ControlDelegation` déjà en base)
-- Tests automatisés, ramp-up (k6/Apache Benchmark)
-
-
-
-psql -h localhost -p 5432 -U nerrakeb -d postgres
-CREATE USER musicroom WITH PASSWORD 'YOUR_PASSWORD';
-CREATE DATABASE musicroom OWNER musicroom;
+- Compléter les tests des modules musique et les tests de charge (k6/Apache Benchmark)

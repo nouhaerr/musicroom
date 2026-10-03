@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SocialProfile } from './facebook.provider';
 
@@ -7,11 +7,25 @@ import { SocialProfile } from './facebook.provider';
 // Google et on s'assure qu'il a bien été émis pour NOTRE client (aud).
 @Injectable()
 export class GoogleProvider {
-  constructor(private readonly config: ConfigService) {}
+  private readonly clientId: string;
+  private readonly enabled: boolean;
+  constructor(config: ConfigService) {
+    const enabled = config.get<string>('GOOGLE_AUTH_ENABLED', 'true');
+    if (enabled !== 'true' && enabled !== 'false') {
+      throw new Error('GOOGLE_AUTH_ENABLED doit valoir true ou false');
+    }
+    this.enabled = enabled === 'true';
+    this.clientId = config.get<string>('GOOGLE_CLIENT_ID')?.trim() ?? '';
+    if (this.enabled && !this.clientId) throw new Error('GOOGLE_CLIENT_ID est requis');
+  }
 
   async verify(idToken: string): Promise<SocialProfile> {
+    if (!this.enabled) {
+      throw new ServiceUnavailableException('La connexion Google est désactivée');
+    }
     const res = await fetch(
       `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
+      { signal: AbortSignal.timeout(10_000) },
     );
     if (!res.ok) {
       throw new UnauthorizedException('ID token Google invalide');
@@ -19,14 +33,16 @@ export class GoogleProvider {
     const data = (await res.json()) as {
       sub?: string;
       email?: string;
-      email_verified?: string;
+      email_verified?: string | boolean;
       name?: string;
       aud?: string;
     };
 
-    const expectedClientId = this.config.get<string>('GOOGLE_CLIENT_ID');
-    if (expectedClientId && data.aud !== expectedClientId) {
+    if (data.aud !== this.clientId) {
       throw new UnauthorizedException('ID token Google émis pour une autre application');
+    }
+    if (data.email_verified !== true && data.email_verified !== 'true') {
+      throw new UnauthorizedException('Email Google non vérifié');
     }
     if (!data.sub || !data.email) {
       throw new UnauthorizedException('Profil Google incomplet (email manquant)');
