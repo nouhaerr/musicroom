@@ -20,6 +20,8 @@ export interface MusicProvider {
   search(query: string, limit: number, index: number): Promise<CatalogSearchResult>;
   // null when the track doesn't exist in the catalog
   getTrack(externalId: string): Promise<CatalogTrack | null>;
+  // Canonical form of a catalog id (same track, same string), or null if it can't be a valid id
+  normalizeId(externalId: string): string | null;
 }
 
 // Injection token: a TypeScript interface no longer exists at runtime,

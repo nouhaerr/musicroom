@@ -1,5 +1,5 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { Song } from '../../generated/prisma';
+import { Prisma, Song } from '../../generated/prisma';
 import { PrismaService } from '../prisma/prisma.service';
 import { SearchSongsDto } from './dto/search-songs.dto';
 import { CatalogSearchResult, MUSIC_PROVIDER, MusicProvider } from './providers/music-provider';
@@ -20,25 +20,34 @@ export class SongsService {
 
   // Returns the song from our database, importing it from the catalog on first use
   async findOrCreateByExternalId(externalId: string): Promise<Song> {
-    const existing = await this.prisma.song.findUnique({ where: { externalId } });
+    // The same track can be written several ways (e.g. leading zeros): look it up by its canonical id
+    const id = this.provider.normalizeId(externalId);
+    if (!id) throw new NotFoundException('Track not found in the music catalog');
+
+    const existing = await this.prisma.song.findUnique({ where: { externalId: id } });
     if (existing) return existing;
 
-    const track = await this.provider.getTrack(externalId);
+    const track = await this.provider.getTrack(id);
     if (!track) throw new NotFoundException('Track not found in the music catalog');
 
-    // upsert, not create: two users adding the same new track at the same time
-    // must not fail on the unique externalId constraint
-    return this.prisma.song.upsert({
-      where: { externalId },
-      update: {},
-      create: {
-        externalId,
-        title: track.title,
-        artist: track.artist,
-        durationSec: track.durationSec,
-        sourceUri: track.link,
-        thumbnailUrl: track.coverUrl,
-      },
-    });
+    try {
+      return await this.prisma.song.create({
+        data: {
+          externalId: track.externalId,
+          title: track.title,
+          artist: track.artist,
+          durationSec: track.durationSec,
+          sourceUri: track.link,
+          thumbnailUrl: track.coverUrl,
+        },
+      });
+    } catch (e) {
+      // Another request imported the same track between our lookup and our insert:
+      // the unique externalId rejected ours, so return the row it created
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        return this.prisma.song.findUniqueOrThrow({ where: { externalId: track.externalId } });
+      }
+      throw e;
+    }
   }
 }

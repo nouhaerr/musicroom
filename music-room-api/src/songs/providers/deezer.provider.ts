@@ -37,10 +37,16 @@ export class DeezerProvider implements MusicProvider {
     return { total: body.total, items: body.data.map(toCatalogTrack) };
   }
 
-  async getTrack(externalId: string): Promise<CatalogTrack | null> {
-    // Deezer ids are digits only: reject anything else without calling Deezer
+  normalizeId(externalId: string): string | null {
+    // Deezer ids are digits only, and Deezer ignores leading zeros (067238732 = 67238732)
     if (!/^\d+$/.test(externalId)) return null;
-    const track = await this.request<DeezerTrack>(`/track/${externalId}`);
+    return externalId.replace(/^0+(?=\d)/, '');
+  }
+
+  async getTrack(externalId: string): Promise<CatalogTrack | null> {
+    const id = this.normalizeId(externalId);
+    if (!id) return null;
+    const track = await this.request<DeezerTrack>(`/track/${id}`);
     return track ? toCatalogTrack(track) : null;
   }
 
