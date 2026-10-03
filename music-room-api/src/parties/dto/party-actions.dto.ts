@@ -27,3 +27,11 @@ export class InviteUserDto {
   @IsUUID()
   userId!: string;
 }
+
+// Body of POST /parties/:id/next: the song the client currently sees playing (optimistic lock)
+export class NextTrackDto {
+  @ApiPropertyOptional({ description: 'Song id the client sees playing; omit if nothing is playing yet' })
+  @IsOptional()
+  @IsUUID()
+  expectedNowPlayingSongId?: string;
+}

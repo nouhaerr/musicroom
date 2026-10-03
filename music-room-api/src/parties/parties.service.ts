@@ -11,7 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ResourceType, Visibility, VoteLicense, Party } from '../../generated/prisma';
 import { distanceMeters } from '../common/geo';
 import { CreatePartyDto } from './dto/create-party.dto';
-import { SuggestSongDto, VoteDto } from './dto/party-actions.dto';
+import { NextTrackDto, SuggestSongDto, VoteDto } from './dto/party-actions.dto';
 import { SongsService } from '../songs/songs.service';
 
 @Injectable()
@@ -86,7 +86,7 @@ export class PartiesService {
   async getDetail(id: string, userId: string) {
     const party = await this.findByIdOrThrow(id);
     await this.assertCanView(party, userId);
-    return party;
+    return this.prisma.party.findUnique({ where: { id }, include: { nowPlaying: true } });
   }
 
   // -----------------------------------------------------------------
@@ -135,6 +135,37 @@ export class PartiesService {
       where: { partyPlaylistId: party.partyPlaylistId },
       include: { song: true, _count: { select: { votes: true } } },
       orderBy: [{ voteCount: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }], ...paginate(query),
+    });
+  }
+
+  // Owner moves the party to the next track: the top of the queue starts playing and leaves it.
+  // Optimistic lock: the client sends the song it sees playing; if it changed meanwhile -> 409.
+  async playNext(partyId: string, userId: string, dto: NextTrackDto) {
+    const party = await this.findByIdOrThrow(partyId);
+    if (party.ownerId !== userId) {
+      throw new ForbiddenException('Only the party owner can change the track');
+    }
+    const expected = dto.expectedNowPlayingSongId ?? null;
+
+    return this.prisma.$transaction(async (tx) => {
+      // Same order as getQueue: most votes first, earliest suggestion wins ties
+      const next = await tx.partySong.findFirst({
+        where: { partyPlaylistId: party.partyPlaylistId },
+        orderBy: [{ voteCount: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      });
+      if (!next) throw new ConflictException('The queue is empty');
+
+      // Check and switch in one atomic statement: only if the client's view is still current
+      const { count } = await tx.party.updateMany({
+        where: { id: partyId, nowPlayingSongId: expected },
+        data: { nowPlayingSongId: next.songId, nowPlayingStartedAt: new Date() },
+      });
+      if (count === 0) {
+        throw new ConflictException('The track has already changed: refresh the party');
+      }
+
+      await tx.partySong.delete({ where: { id: next.id } });
+      return tx.party.findUnique({ where: { id: partyId }, include: { nowPlaying: true } });
     });
   }
 
