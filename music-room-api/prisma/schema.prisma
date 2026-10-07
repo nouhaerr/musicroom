@@ -257,6 +257,7 @@ model Party {
 
   nowPlayingSongId    String?     // which song is playing (null = nothing yet)
   nowPlayingStartedAt DateTime?   // when it started
+  playbackVersion     Int         @default(0) // +1 on every playback change: the optimistic lock for "next"
 
   nowPlaying    Song?         @relation(fields: [nowPlayingSongId], references: [id], onDelete: SetNull)
   owner         User          @relation("PartyOwner", fields: [ownerId], references: [id], onDelete: Cascade)
