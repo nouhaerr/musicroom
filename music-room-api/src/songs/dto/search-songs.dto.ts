@@ -1,10 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { IsInt, IsOptional, IsString, Max, MaxLength, Min, MinLength } from 'class-validator';
 
 // Query parameters for GET /songs/search
 export class SearchSongsDto {
   @ApiProperty({ example: 'daft punk' })
+  // Trimmed before validation: a blank query is a client error (400), not something to send to the catalog
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @MinLength(1)
   @MaxLength(100)
