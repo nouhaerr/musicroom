@@ -22,6 +22,6 @@ import { MailModule } from '../mail/mail.module';
   ],
   controllers: [AuthController],
   providers: [SessionsService, AuthService, LocalStrategy, JwtStrategy, FacebookProvider, GoogleProvider],
-  exports: [AuthService],
+  exports: [AuthService, SessionsService],
 })
 export class AuthModule {}
