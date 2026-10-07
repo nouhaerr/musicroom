@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsLatitude, IsLongitude, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { IsInt, IsLatitude, IsLongitude, IsOptional, IsString, IsUUID, Max, MaxLength, Min, MinLength } from 'class-validator';
 
 export class SuggestSongDto {
   @ApiProperty({ example: '67238732', description: 'Track id in the music catalog (from GET /songs/search)' })
@@ -28,10 +28,11 @@ export class InviteUserDto {
   userId!: string;
 }
 
-// Body of POST /parties/:id/next: the song the client currently sees playing (optimistic lock)
+// Body of POST /parties/:id/next: the playback version the client last saw (optimistic lock)
 export class NextTrackDto {
-  @ApiPropertyOptional({ description: 'Song id the client sees playing; omit if nothing is playing yet' })
-  @IsOptional()
-  @IsUUID()
-  expectedNowPlayingSongId?: string;
+  @ApiProperty({ example: 0, description: "The party's playbackVersion as last seen by the client (0 before the first song)" })
+  @IsInt()
+  @Min(0)
+  @Max(2147483647) // the column is a 32-bit integer: a larger value must be a 400, not a database error
+  expectedPlaybackVersion!: number;
 }

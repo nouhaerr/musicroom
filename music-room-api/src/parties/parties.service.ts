@@ -139,33 +139,57 @@ export class PartiesService {
   }
 
   // Owner moves the party to the next track: the top of the queue starts playing and leaves it.
-  // Optimistic lock: the client sends the song it sees playing; if it changed meanwhile -> 409.
+  // Optimistic lock: the client sends the playbackVersion it last saw. Every playback change
+  // increments it, so a request based on an older state is refused (409) even if the same
+  // song is playing again.
   async playNext(partyId: string, userId: string, dto: NextTrackDto) {
     const party = await this.findByIdOrThrow(partyId);
     if (party.ownerId !== userId) {
       throw new ForbiddenException('Only the party owner can change the track');
     }
-    const expected = dto.expectedNowPlayingSongId ?? null;
 
     return this.prisma.$transaction(async (tx) => {
+      // Check the version and take the next one in a single atomic statement. It also locks
+      // the party row: a concurrent "next" waits here, then fails this same check.
+      const { count } = await tx.party.updateMany({
+        where: { id: partyId, playbackVersion: dto.expectedPlaybackVersion },
+        data: { playbackVersion: { increment: 1 } },
+      });
+      if (count === 0) {
+        throw new ConflictException('Playback has already changed: refresh the party');
+      }
+
       // Same order as getQueue: most votes first, earliest suggestion wins ties
       const next = await tx.partySong.findFirst({
         where: { partyPlaylistId: party.partyPlaylistId },
         orderBy: [{ voteCount: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }],
       });
-      if (!next) throw new ConflictException('The queue is empty');
-
-      // Check and switch in one atomic statement: only if the client's view is still current
-      const { count } = await tx.party.updateMany({
-        where: { id: partyId, nowPlayingSongId: expected },
-        data: { nowPlayingSongId: next.songId, nowPlayingStartedAt: new Date() },
-      });
-      if (count === 0) {
-        throw new ConflictException('The track has already changed: refresh the party');
+      if (!next) {
+        // Nothing left to play: stop playback, so nobody keeps seeing a finished song as playing.
+        // Read the current song inside the transaction (the row is locked by the update above),
+        // not from the copy fetched before it.
+        const { nowPlayingSongId } = await tx.party.findUniqueOrThrow({
+          where: { id: partyId },
+          select: { nowPlayingSongId: true },
+        });
+        if (!nowPlayingSongId) throw new ConflictException('The queue is empty');
+        return tx.party.update({
+          where: { id: partyId },
+          data: { nowPlayingSongId: null, nowPlayingStartedAt: null },
+          include: { nowPlaying: true },
+        });
       }
 
+      // Votes first, then the queue entry: the same lock order as removeVote (vote row, then
+      // song row). Letting the cascade delete the votes would lock them in the opposite order
+      // and can deadlock with a concurrent vote removal.
+      await tx.vote.deleteMany({ where: { partySongId: next.id } });
       await tx.partySong.delete({ where: { id: next.id } });
-      return tx.party.findUnique({ where: { id: partyId }, include: { nowPlaying: true } });
+      return tx.party.update({
+        where: { id: partyId },
+        data: { nowPlayingSongId: next.songId, nowPlayingStartedAt: new Date() },
+        include: { nowPlaying: true },
+      });
     });
   }
 
@@ -196,6 +220,10 @@ export class PartiesService {
     } catch (e: unknown) {
       if (this.isUniqueConstraintError(e)) {
         throw new ConflictException('Vous avez déjà voté pour ce morceau');
+      }
+      // The song left the queue (it just started playing) between the check above and this write
+      if (this.isMissingRowError(e)) {
+        throw new NotFoundException('Morceau introuvable dans cet événement');
       }
       throw e;
     }
@@ -275,5 +303,11 @@ export class PartiesService {
 
   private isUniqueConstraintError(e: unknown): boolean {
     return typeof e === 'object' && e !== null && (e as { code?: string }).code === 'P2002';
+  }
+
+  // P2003: a foreign key points to a row that no longer exists; P2025: the row to update is gone
+  private isMissingRowError(e: unknown): boolean {
+    const code = typeof e === 'object' && e !== null ? (e as { code?: string }).code : undefined;
+    return code === 'P2003' || code === 'P2025';
   }
 }
