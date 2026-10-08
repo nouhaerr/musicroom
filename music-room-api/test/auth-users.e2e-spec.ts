@@ -1,7 +1,8 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ThrottlerGuard } from '@nestjs/throttler';
-import { randomUUID } from 'crypto';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { randomBytes, randomUUID } from 'crypto';
 import { execFileSync } from 'child_process';
 import { PrismaClient } from '../generated/prisma';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -53,7 +54,7 @@ beforeAll(async () => {
   url.searchParams.set('schema', schema);
   Object.assign(process.env, {
     DATABASE_URL: url.href,
-    JWT_ACCESS_SECRET: 'e2e-access-secret', JWT_REFRESH_SECRET: 'e2e-refresh-secret',
+    JWT_ACCESS_SECRET: randomBytes(32).toString('hex'), JWT_REFRESH_SECRET: randomBytes(32).toString('hex'),
     JWT_ACCESS_EXPIRES_IN: '15m', JWT_REFRESH_EXPIRES_IN: '7d', GOOGLE_AUTH_ENABLED: 'false',
   });
   execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'migrate', 'deploy'], {
@@ -85,7 +86,38 @@ afterAll(async () => {
   if (admin) await admin.$disconnect();
 });
 
+describe('Swagger request contracts', () => {
+  it('keeps login bodies, social credentials and pagination visible after framework upgrades', () => {
+    const document = SwaggerModule.createDocument(app, new DocumentBuilder().addBearerAuth().build());
+    const schemas = document.components!.schemas!;
+    expect(document.paths['/auth/login'].post!.requestBody).toMatchObject({
+      content: { 'application/json': { schema: { $ref: '#/components/schemas/LoginDto' } } },
+    });
+    expect(schemas.LoginDto).toMatchObject({ required: expect.arrayContaining(['email', 'password']) });
+    expect(schemas.FacebookLoginDto).toMatchObject({ properties: { accessToken: { type: 'string', minLength: 1 } } });
+    expect(schemas.GoogleLoginDto).toMatchObject({ properties: { idToken: { type: 'string', minLength: 1 } } });
+    expect(document.paths['/friends'].get!.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'page', in: 'query' }),
+      expect.objectContaining({ name: 'limit', in: 'query' }),
+    ]));
+  });
+});
+
 describe('Email authentication and persisted sessions', () => {
+  it('still authenticates password hashes produced by bcrypt 5.1.1', async () => {
+    // Synthetic fixture generated before upgrading bcrypt; no real account data.
+    const email = `${randomUUID()}@example.com`;
+    const user = await db.user.create({ data: {
+      email, name: 'Legacy bcrypt account', emailVerifiedAt: new Date(),
+      passwordHash: '$2b$12$d9X43C/pCwUEwPqy/lYvpONe1XXX3oZVeKy.v5GOPfsvAjVF2saxS',
+    } });
+    const login = await request('POST', '/auth/login', { email, password: 'Legacy-fixture-only-2026!' });
+    expect(login.status).toBe(201);
+    expect(login.body.user.id).toBe(user.id);
+    expect((await request('GET', '/users/me', undefined, login.body.accessToken)).status).toBe(200);
+    expect((await request('POST', '/auth/login', { email, password: 'Incorrect-password!' })).status).toBe(401);
+  });
+
   it('requires valid input and verified email before login', async () => {
     const email = `${randomUUID()}@example.com`;
     const password = 'Test-password-123!';
@@ -159,6 +191,32 @@ describe('Email authentication and persisted sessions', () => {
 });
 
 describe('Social accounts', () => {
+  it.each(['google', 'facebook'])('creates one account on first login and reuses its identity (%s)', async provider => {
+    const mock = provider === 'google' ? google : facebook;
+    const providerId = randomUUID();
+    const email = `${randomUUID()}@example.com`;
+    mock.verify.mockResolvedValue({ providerId, email, name: 'New social user' });
+    const body = provider === 'google' ? { idToken: 'provider-token' } : { accessToken: 'provider-token' };
+    const first = await request('POST', `/auth/${provider}`, body);
+    expect(first.status).toBe(201);
+    expect((await request('GET', '/users/me', undefined, first.body.accessToken)).status).toBe(200);
+    const second = await request('POST', `/auth/${provider}`, body);
+    expect(second.status).toBe(201);
+    expect(second.body.user.id).toBe(first.body.user.id);
+    expect(await db.user.count({ where: { email } })).toBe(1);
+    expect((await request('GET', '/users/me', undefined, 'provider-token')).status).toBe(401);
+  });
+
+  it.each(['google', 'facebook'])('rejects empty and oversized social tokens before provider calls (%s)', async provider => {
+    const mock = provider === 'google' ? google : facebook;
+    mock.verify.mockClear();
+    const field = provider === 'google' ? 'idToken' : 'accessToken';
+    for (const token of ['', 'x'.repeat(16385)]) {
+      expect((await request('POST', `/auth/${provider}`, { [field]: token })).status).toBe(400);
+    }
+    expect(mock.verify).not.toHaveBeenCalled();
+  });
+
   it.each(['google', 'facebook'])('requires explicit linking for an existing email (%s)', async provider => {
     const a = await account();
     const mock = provider === 'google' ? google : facebook;
@@ -314,5 +372,75 @@ describe('Device ownership', () => {
     expect((await request('DELETE', `/devices/${device.id}`, undefined, b.accessToken)).status).toBe(404);
     expect((await request('DELETE', `/devices/${device.id}`, undefined, a.accessToken)).status).toBe(200);
     expect(await db.device.findUnique({ where: { id: device.id } })).toBeNull();
+  });
+});
+
+describe('Pagination across auth/users/social lists', () => {
+  it('returns distinct, stable pages scoped to the current user and validates list bounds', async () => {
+    const owner = await account();
+    const contacts = [await account('Contact A'), await account('Contact B'), await account('Contact C')];
+    const searchName = `Pagination-${randomUUID()}`;
+    const pendingIds: string[] = [];
+    const deviceIds: string[] = [];
+    const invitationIds: string[] = [];
+    for (const contact of contacts) {
+      expect((await request('PATCH', '/users/me', { name: searchName }, contact.accessToken)).status).toBe(200);
+      const pending = await request('POST', '/friends/requests', { userId: contact.id }, owner.accessToken);
+      expect(pending.status).toBe(201);
+      pendingIds.push(pending.body.id);
+      const device = await request('POST', '/devices', { platform: 'IOS', model: 'Test', appVersion: '1' }, owner.accessToken);
+      expect(device.status).toBe(201);
+      deviceIds.push(device.body.id);
+      const playlist = await request('POST', '/playlists', { name: 'Invitation pagination', visibility: 'PRIVATE' }, contact.accessToken);
+      expect(playlist.status).toBe(201);
+      const invitation = await request('POST', `/playlists/${playlist.body.id}/invite`, { userId: owner.id }, contact.accessToken);
+      expect(invitation.status).toBe(201);
+      invitationIds.push(invitation.body.id);
+    }
+
+    async function checkPages(path: string, expectedIds: string[]) {
+      const separator = path.includes('?') ? '&' : '?';
+      const get = (page: number) => request('GET', `${path}${separator}page=${page}&limit=2`, undefined, owner.accessToken);
+      const first = await get(1);
+      const second = await get(2);
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(first.body).toHaveLength(2);
+      expect(second.body).toHaveLength(1);
+      const ids = (rows: Array<{ id: string }>) => rows.map(row => row.id);
+      expect([...ids(first.body), ...ids(second.body)].sort()).toEqual([...expectedIds].sort());
+      expect(ids((await get(1)).body)).toEqual(ids(first.body));
+      expect((await get(3)).body).toEqual([]);
+    }
+
+    await checkPages('/friends/requests', pendingIds);
+    await checkPages('/devices', deviceIds);
+    await checkPages('/invitations/me', invitationIds);
+    await checkPages(`/users/search?q=${searchName}`, contacts.map(contact => contact.id));
+    for (let i = 0; i < contacts.length; i++) {
+      expect((await request('POST', `/friends/requests/${pendingIds[i]}/accept`, {}, contacts[i].accessToken)).status).toBe(201);
+    }
+    await checkPages('/friends', contacts.map(contact => contact.id));
+    for (const path of ['/friends', '/friends/requests', '/devices', '/invitations/me', '/users/search']) {
+      for (const query of ['page=0', 'page=1.5', 'limit=101', 'limit=-1']) {
+        expect((await request('GET', `${path}?${query}`, undefined, owner.accessToken)).status).toBe(400);
+      }
+    }
+  });
+});
+
+describe('Login rate limit', () => {
+  it('rejects the eleventh attempt from one IP with the real throttler guard', async () => {
+    // Re-enable the production guard for this test only, in the isolated Nest process.
+    throttling.mockRestore();
+    try {
+      const body = { email: `${randomUUID()}@example.com`, password: 'Wrong-password-123!' };
+      for (let i = 0; i < 10; i++) {
+        expect((await request('POST', '/auth/login', body)).status).toBe(401);
+      }
+      expect((await request('POST', '/auth/login', body)).status).toBe(429);
+    } finally {
+      throttling = jest.spyOn(ThrottlerGuard.prototype, 'canActivate').mockResolvedValue(true);
+    }
   });
 });

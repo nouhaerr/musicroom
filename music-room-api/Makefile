@@ -1,12 +1,18 @@
 COMPOSE = docker compose
+NODE_IMAGE = node:22.23.3-alpine
+SECRETS_RUN = docker run --rm --user "$$(id -u):$$(id -g)" -v "$(CURDIR):/usr/src/app" -w /usr/src/app $(NODE_IMAGE) node scripts/generate-jwt-secrets.cjs
 
-.PHONY: all up down logs ps migration test shell db-shell fclean re
+.PHONY: all up down logs ps migration test lint typecheck secrets shell db-shell fclean re
 
 all: up
 
 # First run only: never overwrites an existing .env
 .env:
-	cp .env.example .env
+	$(SECRETS_RUN) --init
+
+# Explicit rotation only: invalidates existing tokens when backend is recreated.
+secrets:
+	$(SECRETS_RUN) --write
 
 up: .env
 	$(COMPOSE) up --build -d --renew-anon-volumes
@@ -27,6 +33,12 @@ migration:
 
 test:
 	$(COMPOSE) exec backend npm test
+
+lint:
+	$(COMPOSE) exec backend npm run lint
+
+typecheck:
+	$(COMPOSE) exec backend npm run typecheck
 
 shell:
 	$(COMPOSE) exec backend sh

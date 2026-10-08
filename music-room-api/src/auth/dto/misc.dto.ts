@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsString, MaxLength, MinLength } from 'class-validator';
 
 export class RefreshTokenDto {
   @ApiProperty()
@@ -31,13 +31,17 @@ export class ResetPasswordDto {
 }
 
 export class FacebookLoginDto {
-  @ApiProperty({ description: "Access token obtenu côté mobile via le SDK Facebook" })
+  @ApiProperty({ description: 'Token utilisateur Facebook du SDK mobile (pas un token d’application ni un JWT Sonora)', minLength: 1, maxLength: 16384 })
   @IsString()
+  @MinLength(1)
+  @MaxLength(16384)
   accessToken!: string;
 }
 
 export class GoogleLoginDto {
-  @ApiProperty({ description: "ID token obtenu côté mobile via le SDK Google" })
+  @ApiProperty({ description: 'ID token Google du SDK mobile, émis pour le client Web GOOGLE_CLIENT_ID (pas un access token Google)', minLength: 1, maxLength: 16384 })
   @IsString()
+  @MinLength(1)
+  @MaxLength(16384)
   idToken!: string;
 }
