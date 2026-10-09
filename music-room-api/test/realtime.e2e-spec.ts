@@ -1,4 +1,4 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication, Logger, ValidationPipe } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { ThrottlerGuard } from '@nestjs/throttler';
@@ -10,6 +10,8 @@ import { MailService } from '../src/mail/mail.service';
 import { GoogleProvider } from '../src/auth/social/google.provider';
 import { FacebookProvider } from '../src/auth/social/facebook.provider';
 import { RealtimeGateway } from '../src/realtime/realtime.gateway';
+import { PartiesService } from '../src/parties/parties.service';
+import { PrismaService } from '../src/prisma/prisma.service';
 
 // Every run creates and drops ONLY its own random schema (same pattern as auth-users.e2e-spec.ts)
 const schema = `musicroom_test_${randomUUID().replace(/-/g, '')}`;
@@ -17,14 +19,17 @@ const ACCESS_SECRET = 'e2e-access-secret';
 const verification = new Map<string, string>();
 const jwt = new JwtService();
 const sockets: Socket[] = [];
+const spies: jest.SpyInstance[] = [];
+const realFetch = global.fetch;
 let app: INestApplication;
 let admin: PrismaClient;
 let base: string;
 let schemaCreated = false;
 let throttling: jest.SpyInstance;
+let deezer: jest.SpyInstance;
 
 async function request(method: string, path: string, body?: unknown, token?: string) {
-  const response = await fetch(base + path, {
+  const response = await realFetch(base + path, {
     method,
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -98,6 +103,18 @@ beforeAll(async () => {
     env: process.env, stdio: 'pipe', timeout: 60000,
   });
 
+  // Fake Deezer: answers /track/:id with a track of that id; any other request goes through
+  deezer = jest.spyOn(global, 'fetch').mockImplementation(async (input, init) => {
+    const target = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const match = target.match(/^https:\/\/api\.deezer\.com\/track\/(\d+)$/);
+    if (!match) return realFetch(input, init);
+    const id = Number(match[1]);
+    return new Response(JSON.stringify({
+      id, title: `Track ${id}`, duration: 200, link: `https://www.deezer.com/track/${id}`,
+      preview: '', artist: { name: 'Test Artist' }, album: { cover_medium: '' },
+    }), { status: 200 });
+  });
+
   // Load the module only after the test environment is configured.
   const { AppModule } = await import('../src/app.module');
   throttling = jest.spyOn(ThrottlerGuard.prototype, 'canActivate').mockResolvedValue(true);
@@ -117,11 +134,13 @@ beforeAll(async () => {
 
 afterEach(() => {
   for (const socket of sockets.splice(0)) socket.disconnect();
+  for (const spy of spies.splice(0)) spy.mockRestore();
 });
 
 afterAll(async () => {
   if (app) await app.close();
   throttling?.mockRestore();
+  deezer?.mockRestore();
   if (schemaCreated) await admin.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
   if (admin) await admin.$disconnect();
 });
@@ -430,5 +449,461 @@ describe('Realtime subscriptions: a logout reaches an open connection', () => {
 
     expect(await watch(socket, id)).toEqual({ ok: true });
     expect(socket.connected).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------
+// Party snapshots
+// -----------------------------------------------------------------
+type Snapshot = {
+  party: { id: string; playbackVersion: number; nowPlaying: { id: string } | null };
+  queue: { id: string; songId: string; voteCount: number }[];
+  queueLength: number;
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Waits until `condition` holds, checking every 10 ms (fails after 3 s)
+async function until(condition: () => boolean) {
+  const deadline = Date.now() + 3000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('Timed out waiting for the condition');
+    await sleep(10);
+  }
+}
+
+// Every snapshot a connection receives, in the order they arrive
+function record(socket: Socket): Snapshot[] {
+  const received: Snapshot[] = [];
+  socket.on('party:snapshot', (snapshot: Snapshot) => received.push(snapshot));
+  return received;
+}
+
+// A connection watching a party, once it has received the snapshot sent on subscribing
+async function watcher(token: string, id: string) {
+  const socket = await connect({ auth: { token } });
+  const received = record(socket);
+  expect(await watch(socket, id)).toEqual({ ok: true });
+  await until(() => received.length === 1);
+  return { socket, received, last: () => received[received.length - 1] };
+}
+
+let lastTrack = 5000;
+const track = () => String(lastTrack++); // a Deezer id no other test used
+
+const suggest = (id: string, externalId: string, token: string) =>
+  request('POST', `/parties/${id}/songs`, { externalId }, token);
+const vote = (id: string, entryId: string, token: string) =>
+  request('POST', `/parties/${id}/songs/${entryId}/vote`, {}, token);
+const unvote = (id: string, entryId: string, token: string) =>
+  request('DELETE', `/parties/${id}/songs/${entryId}/vote`, undefined, token);
+const next = (id: string, token: string, expectedPlaybackVersion: number) =>
+  request('POST', `/parties/${id}/next`, { expectedPlaybackVersion }, token);
+
+// A public party with `count` songs suggested by its owner; returns the queue entry ids in order
+async function partyWithSongs(ownerToken: string, count: number) {
+  const id = await party(ownerToken);
+  const entries: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const suggested = await suggest(id, track(), ownerToken);
+    expect(suggested.status).toBe(201);
+    entries.push(suggested.body.id);
+  }
+  return { id, entries };
+}
+
+// What the REST routes show for a party right now: a snapshot must hold exactly this
+async function restView(id: string, token: string) {
+  const party = (await request('GET', `/parties/${id}`, undefined, token)).body;
+  const queue = (await request('GET', `/parties/${id}/queue?limit=100`, undefined, token)).body;
+  return { party, queue };
+}
+const shown = ({ party, queue }: Snapshot) => ({ party, queue });
+
+// Counts the snapshot reads of one party (the reads still happen normally)
+function countReads(id: string) {
+  const reads = jest.spyOn(app.get(PartiesService), 'snapshot');
+  spies.push(reads);
+  return () => reads.mock.calls.filter(([partyId]) => partyId === id).length;
+}
+
+// Makes the first snapshot read of a party wait, once it has read the database, until `release()`.
+// `read` resolves at that moment, so a test can change things while that snapshot is on its way.
+function holdNextRead(id: string) {
+  const parties = app.get(PartiesService);
+  const original = PartiesService.prototype.snapshot.bind(parties);
+  let release!: () => void;
+  let readDone!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  const read = new Promise<void>((resolve) => (readDone = resolve));
+  let held = false;
+  spies.push(jest.spyOn(parties, 'snapshot').mockImplementation(async (partyId: string) => {
+    const snapshot = await original(partyId);
+    if (partyId !== id || held) return snapshot;
+    held = true;
+    readDone();
+    await released;
+    return snapshot;
+  }));
+  return { read, release };
+}
+
+// Makes the first snapshot read of a party fail, like a database error would
+function failNextRead(id: string) {
+  const parties = app.get(PartiesService);
+  const original = PartiesService.prototype.snapshot.bind(parties);
+  let failed = false;
+  spies.push(jest.spyOn(parties, 'snapshot').mockImplementation(async (partyId: string) => {
+    if (partyId !== id || failed) return original(partyId);
+    failed = true;
+    throw new Error('database busy');
+  }));
+}
+
+// The snapshot errors the gateway logged (the logger prints nothing in tests)
+function loggedErrors() {
+  const errors = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+  spies.push(errors);
+  return () => errors.mock.calls.map(([message]) => String(message)).filter((message) => message.startsWith('Snapshot of'));
+}
+
+describe('Party snapshots: what watchers receive', () => {
+  it('sends the current snapshot on subscribing: the same data as GET /parties/:id and GET /queue', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 2);
+    expect((await vote(id, entries[1], owner.accessToken)).status).toBe(201);
+
+    const { received } = await watcher(owner.accessToken, id);
+
+    expect(shown(received[0])).toEqual(await restView(id, owner.accessToken));
+    expect(received[0].queue.map((entry) => entry.id)).toEqual([entries[1], entries[0]]);
+    expect(received[0].queueLength).toBe(2);
+  });
+
+  it('sends every change to everyone watching, with exactly what the REST routes then show', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await party(owner.accessToken);
+    const host = await watcher(owner.accessToken, id);
+    const listener = await watcher(guest.accessToken, id);
+    const bothReceived = async (count: number) => {
+      await until(() => host.received.length === count && listener.received.length === count);
+      const view = await restView(id, owner.accessToken);
+      expect(shown(host.last())).toEqual(view);
+      expect(shown(listener.last())).toEqual(view);
+      return host.last();
+    };
+
+    const first = await suggest(id, track(), guest.accessToken);
+    expect(first.status).toBe(201);
+    expect((await bothReceived(2)).queue).toHaveLength(1);
+
+    const second = await suggest(id, track(), guest.accessToken);
+    expect((await bothReceived(3)).queueLength).toBe(2);
+
+    expect((await vote(id, second.body.id, guest.accessToken)).status).toBe(201);
+    expect((await bothReceived(4)).queue.map((entry) => entry.id)).toEqual([second.body.id, first.body.id]);
+
+    expect((await unvote(id, second.body.id, guest.accessToken)).status).toBe(200);
+    expect((await bothReceived(5)).queue.map((entry) => entry.voteCount)).toEqual([0, 0]);
+
+    expect((await next(id, owner.accessToken, 0)).status).toBe(201);
+    const played = await bothReceived(6);
+    expect(played.party.nowPlaying?.id).toBe(first.body.songId);
+    expect(played.party.playbackVersion).toBe(1);
+    expect(played.queue.map((entry) => entry.id)).toEqual([second.body.id]);
+  });
+
+  it('holds the first 100 queue entries in play order, and the real length of the queue', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const prisma = app.get(PrismaService);
+    const { partyPlaylistId } = await prisma.party.findUniqueOrThrow({ where: { id } });
+    const songs = Array.from({ length: 101 }, (_, i) => ({
+      id: randomUUID(), title: `Bulk ${i}`, artist: 'Test Artist', durationSec: 200, sourceUri: 'https://www.deezer.com',
+    }));
+    await prisma.song.createMany({ data: songs });
+    // Inserted together, so they share createdAt: the order falls back to votes, then id
+    await prisma.partySong.createMany({ data: songs.map((song, i) => ({ songId: song.id, partyPlaylistId, voteCount: i % 3 })) });
+
+    const { received } = await watcher(owner.accessToken, id);
+
+    expect(received[0].queue).toHaveLength(100);
+    expect(received[0].queueLength).toBe(101);
+    expect(received[0].queue).toEqual((await restView(id, owner.accessToken)).queue);
+  });
+
+  it('sends nothing for a refused request', async () => {
+    const owner = await account();
+    const stranger = await account();
+    const id = await party(owner.accessToken);
+    const externalId = track();
+    const entry = (await suggest(id, externalId, owner.accessToken)).body.id;
+    const { received } = await watcher(owner.accessToken, id);
+    expect((await vote(id, entry, owner.accessToken)).status).toBe(201);
+    await until(() => received.length === 2);
+
+    expect((await suggest(id, externalId, owner.accessToken)).status).toBe(409);
+    expect((await vote(id, entry, owner.accessToken)).status).toBe(409);
+    expect((await vote(id, randomUUID(), owner.accessToken)).status).toBe(404);
+    expect((await unvote(id, entry, stranger.accessToken)).status).toBe(404);
+    expect((await next(id, stranger.accessToken, 0)).status).toBe(403);
+    expect((await next(id, owner.accessToken, 7)).status).toBe(409);
+    await sleep(500);
+
+    expect(received).toHaveLength(2);
+  });
+
+  it('removes a vote only through its own party, so the right watchers are told', async () => {
+    const owner = await account();
+    const voter = await account();
+    const other = await party(owner.accessToken);
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const watchingOther = await watcher(owner.accessToken, other);
+    expect((await vote(id, entries[0], voter.accessToken)).status).toBe(201);
+    await until(() => watching.received.length === 2);
+
+    expect((await unvote(other, entries[0], voter.accessToken)).status).toBe(404);
+    expect((await restView(id, owner.accessToken)).queue[0].voteCount).toBe(1);
+
+    expect((await unvote(id, entries[0], voter.accessToken)).status).toBe(200);
+    await until(() => watching.received.length === 3);
+    expect(watching.last().queue[0].voteCount).toBe(0);
+    expect(watchingOther.received).toHaveLength(1);
+  });
+
+  it("sends a party's snapshots only to the connections watching it", async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const otherParty = await party(owner.accessToken);
+    const watching = await watcher(owner.accessToken, id);
+    const watchingOther = await watcher(owner.accessToken, otherParty);
+    const left = await watcher(owner.accessToken, id);
+    expect(await send(left.socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+    const idle = record(await connect({ auth: { token: owner.accessToken } }));
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => watching.received.length === 2);
+    await sleep(300);
+
+    expect(watchingOther.received).toHaveLength(1);
+    expect(left.received).toHaveLength(1);
+    expect(idle).toHaveLength(0);
+  });
+
+  it('sends the snapshot of a new subscription to that connection only', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await party(owner.accessToken);
+    const first = await watcher(owner.accessToken, id);
+
+    await watcher(guest.accessToken, id);
+    await sleep(400);
+
+    expect(first.received).toHaveLength(1);
+  });
+
+  it('sends the snapshot again on a repeated subscription, so a client can resynchronize', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const { socket, received } = await watcher(owner.accessToken, id);
+
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    await until(() => received.length === 2);
+  });
+
+  it('sends no snapshot after a refused subscription', async () => {
+    const owner = await account();
+    const stranger = await account();
+    const id = await party(owner.accessToken, 'PRIVATE');
+    const socket = await connect({ auth: { token: stranger.accessToken } });
+    const received = record(socket);
+
+    expect(await watch(socket, id)).toEqual(refusal('FORBIDDEN'));
+    await sleep(400);
+
+    expect(received).toHaveLength(0);
+  });
+});
+
+describe('Party snapshots: order, merging and failures', () => {
+  it('reads a snapshot as one consistent state, even when a change commits in the middle of the reads', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 2);
+    // Pause the snapshot of the subscription below right after it has read the party, and play
+    // the next song at that moment: that song leaves the queue and becomes the one playing
+    const prisma = app.get(PrismaService);
+    const transaction = prisma.$transaction.bind(prisma) as (...args: unknown[]) => Promise<unknown>;
+    let moved = false;
+    const pauseAfterPartyRead = (tx: any) => new Proxy(tx, {
+      get: (client, model) => model !== 'party' ? client[model] : new Proxy(client.party, {
+        get: (delegate, method) => method !== 'findUniqueOrThrow' ? delegate[method] : async (args: { where: { id: string } }) => {
+          const found = await delegate.findUniqueOrThrow(args);
+          if (!moved && args.where.id === id) {
+            moved = true;
+            expect((await next(id, owner.accessToken, 0)).status).toBe(201);
+          }
+          return found;
+        },
+      }),
+    });
+    spies.push(jest.spyOn(prisma, '$transaction').mockImplementation(((work: unknown, options?: unknown) =>
+      typeof work === 'function' ? transaction((tx: unknown) => work(pauseAfterPartyRead(tx)), options) : transaction(work, options)
+    ) as never));
+
+    const { received } = await watcher(owner.accessToken, id);
+    await until(() => received.length === 2);
+
+    // Entirely before the change, then entirely after it: never the song gone from the queue but not playing
+    expect(moved).toBe(true);
+    expect(received[0].party).toMatchObject({ playbackVersion: 0, nowPlaying: null });
+    expect(received[0].queue.map((entry) => entry.id)).toEqual(entries);
+    expect(received[0].queueLength).toBe(2);
+    expect(received[1].party.playbackVersion).toBe(1);
+    expect(received[1].party.nowPlaying).not.toBeNull();
+    expect(received[1].queue.map((entry) => entry.id)).toEqual([entries[1]]);
+    expect(received[1].queueLength).toBe(1);
+  });
+
+  it('never lets a newer snapshot be overtaken by an older one that was slow to read', async () => {
+    const owner = await account();
+    const voter = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await held.read;
+    expect((await vote(id, entries[0], voter.accessToken)).status).toBe(201);
+    await sleep(400);
+    held.release();
+    await until(() => watching.received.length === 3);
+
+    expect(watching.received.map((snapshot) => snapshot.queue[0].voteCount)).toEqual([0, 1, 2]);
+  });
+
+  it('merges the changes made while a snapshot is on its way into one more snapshot', async () => {
+    const owner = await account();
+    const voters = [await account(), await account(), await account(), await account()];
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await held.read;
+    // The requests are answered while the snapshot is held: sending never slows a request down
+    for (const voter of voters) expect((await vote(id, entries[0], voter.accessToken)).status).toBe(201);
+    held.release();
+    await until(() => watching.received.length === 3);
+    await sleep(600);
+
+    expect(watching.received.map((snapshot) => snapshot.queue[0].voteCount)).toEqual([0, 1, 5]);
+  });
+
+  it('sends at most one snapshot per party every 200 ms', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 2);
+    const { socket, received } = await watcher(owner.accessToken, id);
+    const arrivals: number[] = [];
+    socket.on('party:snapshot', () => arrivals.push(Date.now()));
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => arrivals.length === 1);
+    expect((await vote(id, entries[1], owner.accessToken)).status).toBe(201);
+    await until(() => arrivals.length === 2);
+
+    expect(arrivals[1] - arrivals[0]).toBeGreaterThanOrEqual(190);
+    expect(received[received.length - 1].queue.map((entry) => entry.voteCount)).toEqual([1, 1]);
+  });
+
+  it('does not make a party wait for the snapshot of another one', async () => {
+    const owner = await account();
+    const slow = await partyWithSongs(owner.accessToken, 1);
+    const fast = await partyWithSongs(owner.accessToken, 1);
+    const watchingSlow = await watcher(owner.accessToken, slow.id);
+    const watchingFast = await watcher(owner.accessToken, fast.id);
+    const held = holdNextRead(slow.id);
+
+    expect((await vote(slow.id, slow.entries[0], owner.accessToken)).status).toBe(201);
+    await held.read;
+    expect((await vote(fast.id, fast.entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => watchingFast.received.length === 2);
+    expect(watchingSlow.received).toHaveLength(1);
+
+    held.release();
+    await until(() => watchingSlow.received.length === 2);
+  });
+
+  it('does not read a party that nobody watches', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const reads = countReads(id);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await sleep(400);
+    expect(reads()).toBe(0);
+
+    const { socket } = await watcher(owner.accessToken, id);
+    expect(reads()).toBe(1);
+    expect(await send(socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+    expect((await unvote(id, entries[0], owner.accessToken)).status).toBe(200);
+    await sleep(400);
+    expect(reads()).toBe(1);
+  });
+
+  it('sends nothing to a connection that unsubscribed or closed before its snapshot was read', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const errors = loggedErrors();
+    const held = holdNextRead(id);
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await held.read;
+
+    // Both subscribe while the room's snapshot is held, so theirs can only be read after it
+    const unsubscribed = await connect({ auth: { token: owner.accessToken } });
+    const closed = await connect({ auth: { token: owner.accessToken } });
+    const toUnsubscribed = record(unsubscribed);
+    const toClosed = record(closed);
+    expect(await watch(unsubscribed, id)).toEqual({ ok: true });
+    expect(await watch(closed, id)).toEqual({ ok: true });
+    expect(await send(unsubscribed, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+    closed.disconnect();
+    held.release();
+    await until(() => watching.received.length === 2);
+    await sleep(600);
+
+    expect(toUnsubscribed).toHaveLength(0);
+    expect(toClosed).toHaveLength(0);
+    expect(errors()).toEqual([]);
+  });
+
+  it('logs a failed read and tries again 1 s later, and the change itself still succeeds', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const errors = loggedErrors();
+    failNextRead(id);
+
+    const changedAt = Date.now();
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => watching.received.length === 2);
+
+    expect(Date.now() - changedAt).toBeGreaterThanOrEqual(950);
+    expect(watching.last().queue[0].voteCount).toBe(1);
+    expect(errors()).toEqual([`Snapshot of party:${id} failed: database busy`]);
+  });
+
+  it('also tries again when the snapshot of a new subscription fails', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const errors = loggedErrors();
+    failNextRead(id);
+
+    const { received } = await watcher(owner.accessToken, id);
+
+    expect(received[0].party.id).toBe(id);
+    expect(errors()).toEqual([`Snapshot of party:${id} failed: database busy`]);
   });
 });

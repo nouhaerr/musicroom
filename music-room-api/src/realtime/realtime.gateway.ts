@@ -14,10 +14,20 @@ import { Server, Socket } from 'socket.io';
 import { SessionsService } from '../auth/sessions.service';
 import { PartiesService } from '../parties/parties.service';
 import { SubscribeDto } from './dto/subscribe.dto';
+import { RealtimeService } from './realtime.service';
 
 const MAX_MESSAGE_BYTES = 16 * 1024; // clients only ever send small messages
 const MAX_TIMER_MS = 2 ** 31 - 1; // the longest delay setTimeout accepts
 const MAX_SUBSCRIPTIONS = 20; // how many parties one connection may watch at the same time
+const SNAPSHOT_INTERVAL_MS = 200; // at most 5 snapshots per second per room: changes in between are merged
+const RETRY_DELAY_MS = 1000; // after a failed read (e.g. database busy), try again this much later
+
+// What is waiting to be sent to one room
+interface Pending {
+  target: SubscribeDto;
+  everyone: boolean; // something changed: everyone in the room gets the new snapshot
+  newcomers: Set<string>; // sockets that just subscribed: only they get the current snapshot
+}
 
 // What the server knows about a connected client, set once during the handshake
 export interface SocketData {
@@ -46,13 +56,18 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
 
   private readonly logger = new Logger(RealtimeGateway.name);
 
+  // One entry per room that has snapshots being sent; removed as soon as there is nothing left
+  private readonly pending = new Map<string, Pending>();
+
   constructor(
     private readonly sessions: SessionsService,
     private readonly parties: PartiesService,
+    private readonly realtime: RealtimeService,
   ) {}
 
   // Runs before a connection is accepted: a client without a valid login never connects
   afterInit(server: Server) {
+    this.realtime.listen((target) => this.requestSnapshot(target));
     server.use(async (socket: AuthedSocket, next) => {
       try {
         const token = extractToken(socket);
@@ -104,6 +119,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
       return refuse('TOO_MANY', `At most ${MAX_SUBSCRIPTIONS} subscriptions per connection`);
     }
     await socket.join(room);
+    this.requestSnapshot(target, socket.id);
     return { ok: true };
   }
 
@@ -118,6 +134,60 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
   // The same rule as the REST route: whoever may GET the resource may watch it
   private async assertCanView(target: SubscribeDto, userId: string): Promise<void> {
     await this.parties.getDetail(target.id, userId);
+  }
+
+  // Takes a snapshot: the full state of what a room watches, as it is in the database right now
+  private takeSnapshot(target: SubscribeDto) {
+    return this.parties.snapshot(target.id);
+  }
+
+  // Asks for a snapshot of `target`: for the whole room (something changed), or only for one
+  // socket that just subscribed. If snapshots are already being sent to that room, the request
+  // is merged into the next one instead of starting a second sender.
+  private requestSnapshot(target: SubscribeDto, newcomerId?: string) {
+    const room = roomOf(target);
+    let pending = this.pending.get(room);
+    const idle = !pending;
+    if (!pending) {
+      pending = { target, everyone: false, newcomers: new Set() };
+      this.pending.set(room, pending);
+    }
+    if (newcomerId) pending.newcomers.add(newcomerId);
+    else pending.everyone = true;
+    if (idle) void this.sendSnapshots(room, pending);
+  }
+
+  // The only sender of a room: one read and send at a time, so snapshots go out in the order
+  // they were read and a client never gets an older state after a newer one. Each read starts
+  // after the change that asked for it was committed, so the last snapshot is always current.
+  private async sendSnapshots(room: string, pending: Pending) {
+    while (pending.everyone || pending.newcomers.size > 0) {
+      const { everyone, newcomers } = pending;
+      pending.everyone = false;
+      pending.newcomers = new Set();
+      let delay = SNAPSHOT_INTERVAL_MS;
+      try {
+        if (!this.server.sockets.adapter.rooms.get(room)?.size) continue; // nobody watching: no read
+        const snapshot = await this.takeSnapshot(pending.target);
+        const event = `${pending.target.type}:snapshot`;
+        if (everyone) {
+          this.server.to(room).emit(event, snapshot);
+        } else {
+          for (const id of newcomers) {
+            const socket = this.server.sockets.sockets.get(id);
+            if (socket?.rooms.has(room)) socket.emit(event, snapshot); // still connected and subscribed
+          }
+        }
+      } catch (err) {
+        this.logger.error(`Snapshot of ${room} failed: ${(err as Error).message}`);
+        // Nothing was sent: ask again, together with whatever arrived meanwhile
+        if (everyone) pending.everyone = true;
+        for (const id of newcomers) pending.newcomers.add(id);
+        delay = RETRY_DELAY_MS;
+      }
+      await sleep(delay);
+    }
+    this.pending.delete(room);
   }
 
   // A logout must also take effect on a connection that is already open: the login is
@@ -170,3 +240,5 @@ function parse(payload: unknown): SubscribeDto | null {
 function subscriptionCount(socket: Socket): number {
   return socket.rooms.size - (socket.rooms.has(socket.id) ? 1 : 0);
 }
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
