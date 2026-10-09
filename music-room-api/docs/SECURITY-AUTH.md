@@ -57,6 +57,25 @@ Sur un premier `make`, si `.env` n’existe pas, le générateur crée le fichie
 du modèle et génère deux valeurs indépendantes avec `crypto.randomBytes(32)`.
 Le fichier existant n’est jamais réécrit automatiquement au démarrage.
 
+Sur Linux/macOS, le générateur s’exécute avec l’UID/GID de l’utilisateur hôte.
+Sur Windows, cette option est omise ; le chemin `//usr/src/app` évite la
+réécriture de chemin de Git Bash. `make` doit être installé dans le shell utilisé.
+Un fichier nouvellement créé conserve le mode POSIX `0600` (les ACL Windows
+dépendent de Docker Desktop). Une rotation conserve les permissions existantes.
+
+Compose lit `.env` avec les droits de l’hôte et injecte ses variables au backend.
+`CONFIG_IGNORE_ENV_FILE=true`, défini dans Compose, empêche Nest et le diagnostic
+SMTP de rouvrir le fichier monté avec l’UID 1000. Les lancements hors Compose
+continuent à charger `.env` normalement. Les secrets injectés restent validés.
+Ne pas rendre `.env` lisible par tous pour contourner un problème d’UID.
+
+Le test `test/docker-startup.cjs` s’exécute uniquement dans un conteneur Linux
+jetable en root, avec `SONORA_DISPOSABLE_STARTUP_TEST=true` et
+`TEST_DATABASE_URL` vers une base jetable. Après `npm run build`, il crée un
+`.env` avec l’UID 4242, teste l’absence d’écrasement et la rotation, puis lance
+Prisma et le backend avec l’UID 1000. Il contrôle `/docs` et le refus d’un secret
+faible. Ne jamais le lancer dans un conteneur contenant un `.env` de développement.
+
 Pour une rotation volontaire dans le dossier `music-room-api` :
 
 ```sh
@@ -72,6 +91,11 @@ vérification/réinitialisation. Se reconnecter ou demander un nouveau lien.
 Sur plusieurs instances, coordonner la mise à jour des deux secrets.
 
 ## Dépendances
+
+Recontrôle du 9 octobre 2026 : l’audit de production reste à zéro. Une nouvelle
+alerte critique concernait Handlebars 4.7.9 dans l’outillage ; le lockfile utilise
+maintenant 4.7.10. L’audit complet revient à 20 entrées modérées, sans alerte
+élevée ou critique. Aucune mise à jour majeure forcée n’a été appliquée.
 
 Après mise à jour le 6 octobre 2026, `npm run security:audit` (`npm audit --omit=dev`)
 ne signale aucune vulnérabilité connue, contre 16 entrées auparavant, dont 2 critiques.

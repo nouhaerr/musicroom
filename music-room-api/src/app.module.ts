@@ -16,7 +16,11 @@ import { validateEnvironment } from './config/environment';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      ignoreEnvFile: process.env.CONFIG_IGNORE_ENV_FILE === 'true',
+      validate: validateEnvironment,
+    }),
     // Limite par défaut appliquée à toutes les routes : 60 requêtes / minute
     // par IP. Des limites plus strictes sont posées via @Throttle() sur les
     // routes sensibles (login, register...).

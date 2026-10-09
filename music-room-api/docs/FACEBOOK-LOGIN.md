@@ -54,6 +54,14 @@ Le backend interroge `debug_token` et vérifie la validité, l’application des
 l’identifiant utilisateur et les expirations fournies. Le profil `/me` doit appartenir
 au même utilisateur et contenir un email non vide.
 
+Point à distinguer : `debug_token` valide l’identité Facebook et l’application,
+pas la possession de la boîte mail. Notre requête `/me` ne récupère aucun
+indicateur `email_verified`. Actuellement, `createFromSocial` remplit pourtant
+`emailVerifiedAt` pour Google et Facebook. Cette hypothèse Facebook reste à
+remplacer par une vérification Sonora de l’adresse, ou à justifier par une
+garantie actuelle du fournisseur ; elle n’a pas été confirmée lors de la revue.
+Le refus de fusion automatique avec un compte existant reste en place.
+
 - Token rejeté, autre application, utilisateur incohérent ou email absent : 401.
 - Meta indisponible, délai dépassé, HTTP 429/5xx ou JSON illisible : 503 générique.
 - Token vide ou supérieur à 16 384 caractères dans le corps de la route : 400.

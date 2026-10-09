@@ -5,7 +5,9 @@ import { NestFactory } from '@nestjs/core';
 import { MailModule } from '../src/mail/mail.module';
 import { MailService } from '../src/mail/mail.service';
 
-@Module({ imports: [ConfigModule.forRoot({ isGlobal: true }), MailModule] })
+@Module({ imports: [ConfigModule.forRoot({
+  isGlobal: true, ignoreEnvFile: process.env.CONFIG_IGNORE_ENV_FILE === 'true',
+}), MailModule] })
 class SmtpCheckModule {}
 
 async function main() {

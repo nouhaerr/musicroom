@@ -16,8 +16,9 @@ obligatoire avant fusion.
 
 ## Fonctionnement du workflow
 
-Le workflow `.github/workflows/backend-ci.yml` est lancé sur `push`, `pull_request`
-et manuellement depuis Actions. Il utilise Node 22.23.3 et PostgreSQL 16.15,
+Le workflow `.github/workflows/backend-ci.yml` est lancé sur les push vers `main`,
+sur `pull_request` et manuellement depuis Actions. Un push sur une branche de PR
+ne lance donc plus deux exécutions. Il utilise Node 22.23.3 et PostgreSQL 16.15,
 comme le développement Docker. Les actions GitHub sont fixées par commit.
 
 Étapes :

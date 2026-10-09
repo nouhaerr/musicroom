@@ -1,6 +1,13 @@
 COMPOSE = docker compose
 NODE_IMAGE = node:22.23.3-alpine
-SECRETS_RUN = docker run --rm --user "$$(id -u):$$(id -g)" -v "$(CURDIR):/usr/src/app" -w /usr/src/app $(NODE_IMAGE) node scripts/generate-jwt-secrets.cjs
+# Windows shells have no portable id command. Docker Desktop maps bind mounts.
+ifeq ($(OS),Windows_NT)
+RUN_AS =
+else
+RUN_AS = --user "$$(id -u):$$(id -g)"
+endif
+# A double leading slash prevents Git Bash from rewriting the container workdir.
+SECRETS_RUN = docker run --rm $(RUN_AS) -v "$(CURDIR):/usr/src/app" -w //usr/src/app $(NODE_IMAGE) node scripts/generate-jwt-secrets.cjs
 
 .PHONY: all up down logs ps migration test lint typecheck secrets shell db-shell fclean re
 

@@ -15,6 +15,16 @@ make logs                      # suit les logs du backend
 
 Documentation Swagger générée automatiquement : http://localhost:3000/docs
 
+Sur Windows, utiliser Docker Desktop avec les conteneurs Linux et installer
+`make` pour le shell choisi (Git Bash ou PowerShell). La génération des secrets
+omet le mapping UID/GID sous Windows. Sur Linux/macOS, elle utilise l’utilisateur
+hôte ; le `.env` neuf reste en `0600`. Compose injecte les variables sans imposer
+que l’utilisateur du backend puisse relire ce fichier. Voir [la note de sécurité](docs/SECURITY-AUTH.md).
+
+PostgreSQL est publié uniquement sur `127.0.0.1:5432`. Remplacer le mot de passe
+de développement du modèle avant tout déploiement. Les migrations Prisma assurent
+l’initialisation du schéma ; aucun dossier `docker/postgres-init` n’est requis.
+
 ## Configuration
 
 Éditez `.env` (créé automatiquement par `make` s’il est absent, à partir de
@@ -69,7 +79,7 @@ docker compose exec backend sh -c 'TEST_DATABASE_URL="$DATABASE_URL" npm run tes
 
 Le workflow [Backend CI](../.github/workflows/backend-ci.yml) exécute installation,
 audit des dépendances de production, génération Prisma, lint, TypeScript, tests unitaires, compilation et tests d’intégration
-sur chaque push et pull request. Il utilise PostgreSQL jetable et les fournisseurs
+sur les push vers `main` et les pull requests. Il utilise PostgreSQL jetable et les fournisseurs
 sociaux simulés, sans secrets SMTP/OAuth. Le premier résultat GitHub sera disponible
 après le push du workflow. Détails : [CI.md](docs/CI.md).
 
