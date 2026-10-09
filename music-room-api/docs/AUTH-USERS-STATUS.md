@@ -1,6 +1,6 @@
 # État de la partie auth, utilisateurs et social
 
-Point du 7 octobre 2026, limité à la branche locale et aux tests décrits ci-dessous.
+Point du 9 octobre 2026, limité aux commits, à la branche locale et aux tests décrits ci-dessous.
 Le succès des tests automatisés ne vaut pas validation de toutes les configurations
 de production ni du futur client mobile.
 
@@ -56,8 +56,9 @@ Le backend chargé utilise NestJS 11.2.7 et bcrypt 6.0.0 ; Swagger répond HTTP 
 
 La validation des secrets JWT au démarrage est implémentée, sans secrets de secours.
 Le générateur remplace uniquement les deux paramètres JWT, sans afficher leurs valeurs.
-Le workflow GitHub Actions audit/lint/types/tests/build/intégration est préparé ; son
-exécution sur GitHub reste à constater après push. Voir [CI.md](CI.md).
+Le workflow GitHub Actions audit/lint/types/tests/build/intégration a réussi pour
+`c74e20b` dans la PR #4 : [exécution du 8 octobre](https://github.com/nouhaerr/musicroom/actions/runs/37807903307).
+Chaque étape du job backend est verte. Voir [CI.md](CI.md).
 Les deux secrets JWT locaux ont été remplacés après accord de l’utilisatrice,
 le backend recréé et la correspondance avec `.env` vérifiée sans afficher de secret.
 Swagger répond HTTP 200. Les anciens tokens et liens doivent être remplacés.
@@ -74,8 +75,13 @@ Consulter [AUTH-USERS.md](AUTH-USERS.md) pour les routes et les corps attendus.
 
 ## Ce qui reste avant l’intégration mobile ou la production
 
-- Frontend Expo : configuration du projet, SDK sociaux Android/iOS, écrans de
-  vérification/réinitialisation, stockage des sessions et renouvellements sérialisés.
+- Frontend Expo : première base créée dans `music-room-mobile` sur `feat/mobile-auth` :
+  écrans email, profil personnel en lecture, serveur configurable, stockage sécurisé,
+  renouvellements sérialisés et enregistrement d’appareil après authentification.
+  TypeScript, 15 tests du client et export des bundles Android/iOS sont vérifiés localement ;
+  les 21 contrôles `expo-doctor` passent après déduplication des dépendances.
+  Recette réelle Android/iOS, SDK sociaux, écrans amis/invitations et profils d’autrui
+  restent à faire. Voir le [guide mobile](../../music-room-mobile/README.md).
 - Vérifications et publication Meta : reportées ; les tests avec les rôles autorisés
   continuent. Les pages de `sonora-legal` restent à compléter et à héberger.
 - Procédure effective de suppression des données : à définir et tester avant de
@@ -87,10 +93,14 @@ Consulter [AUTH-USERS.md](AUTH-USERS.md) pour les routes et les corps attendus.
 - Dépendances : l’audit de production ne signale plus de vulnérabilité connue après
   mise à jour. Suivre les 20 entrées modérées restantes dans les outils de test,
   liées à un avis sans correctif disponible ; voir la note de sécurité.
-- Livrables partagés : tests de charge, justification technique et déclaration
-  d’usage de l’IA à coordonner avec l’autre développeur.
-- GitHub : pousser le workflow, vérifier le premier résultat de CI, puis configurer
-  si souhaité le contrôle obligatoire avant fusion dans les règles du dépôt.
+- Livrables : [justification technique](TECH-CHOICES.md) et [note d’usage de l’IA](AI-USAGE.md)
+  préparées pour cette contribution. Relecture des auteurs, compléments musique/temps
+  réel et tests de charge restent à coordonner.
+- Swagger : les corps de requête sont documentés ; compléter les DTO de réponse
+  et les exemples d’erreurs des routes auth/users/social (coordination A11).
+- GitHub : CI backend verte ; règle de contrôle obligatoire avant fusion non configurée.
+  Le workflow du nouveau mobile est inclus sur `feat/mobile-auth` ; son résultat
+  sur GitHub reste à vérifier après le push.
 
 Les fonctionnalités musique A8–A11 et leurs revues restent dans le périmètre de
 l’autre développeur. Ce document ne confirme pas leur état sur les branches distantes.

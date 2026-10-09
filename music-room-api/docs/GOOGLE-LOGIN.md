@@ -81,7 +81,9 @@ second est obtenu après la connexion de l'utilisateur à Google.
 ## Préparation Expo Android/iOS
 
 Le projet Expo est le dossier du frontend mobile (écrans, navigation, boutons),
-avec `app.json` ou `app.config.*`. Il n'est pas présent dans ce dépôt à ce stade.
+avec `app.json` ou `app.config.*`. Une base email/session est disponible dans
+[`music-room-mobile`](../../music-room-mobile/README.md). Les SDK de connexion
+Google/Facebook et les identifiants natifs restent à configurer.
 Le SDK Google natif nécessite une development build Expo ; Expo Go ne suffit pas.
 
 Créer les clients natifs dans **le même projet Google Cloud**, une fois leurs

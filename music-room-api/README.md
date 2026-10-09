@@ -65,6 +65,8 @@ Routes, comportement de sécurité, pagination, migrations et tests A1–A5 :
 Tests Facebook et permissions : [guide Facebook Login](docs/FACEBOOK-LOGIN.md).
 État de la partie auth/social et recette restante : [bilan](docs/AUTH-USERS-STATUS.md).
 Protections et limites de déploiement : [note de sécurité](docs/SECURITY-AUTH.md).
+Choix techniques : [justification](docs/TECH-CHOICES.md). Assistance IA : [note d’usage](docs/AI-USAGE.md).
+Première base Android/iOS : [guide du projet Expo](../music-room-mobile/README.md).
 
 ## Vérification automatique
 
@@ -80,8 +82,8 @@ docker compose exec backend sh -c 'TEST_DATABASE_URL="$DATABASE_URL" npm run tes
 Le workflow [Backend CI](../.github/workflows/backend-ci.yml) exécute installation,
 audit des dépendances de production, génération Prisma, lint, TypeScript, tests unitaires, compilation et tests d’intégration
 sur les push vers `main` et les pull requests. Il utilise PostgreSQL jetable et les fournisseurs
-sociaux simulés, sans secrets SMTP/OAuth. Le premier résultat GitHub sera disponible
-après le push du workflow. Détails : [CI.md](docs/CI.md).
+sociaux simulés, sans secrets SMTP/OAuth. L’exécution de la PR #4 pour `c74e20b`
+est réussie. Détails : [CI.md](docs/CI.md).
 
 `make down` arrête les services en conservant les données. `make fclean` et
 `make re` suppriment les volumes et les données PostgreSQL. Pour créer une
