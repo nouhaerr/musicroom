@@ -72,17 +72,36 @@ migration après une modification du schéma : `make migration name=nom_modifica
 > Envoyez le header `X-Device-Id` (reçu de `POST /devices`) sur vos requêtes
 > pour que les logs d'action (V.6) soient rattachés au bon appareil.
 
+### Catalogue musical (`/songs`)
+| Méthode | Route | Description |
+|---|---|---|
+| GET | `/songs/search?q=&limit=&index=` | Rechercher dans le catalogue (Deezer). Renvoie `externalId`, à utiliser pour ajouter un morceau |
+| GET | `/songs/:id/preview` | URL de lecture fraîche d'un morceau enregistré (`:id` = notre id de morceau). À appeler juste avant de jouer : les URLs Deezer expirent après 15 min |
+
+> Le téléphone n'envoie jamais le titre, l'artiste ou l'URL d'un morceau : il
+> envoie seulement `externalId`, et le serveur récupère les données auprès du
+> catalogue (le back-end reste la référence, V.3).
+
+> Une réponse du catalogue est une donnée externe, même en HTTP 200 : chaque
+> champ lu est vérifié (type, entier dans ses bornes, URL http(s), texte non
+> vide, sans caractère NUL et de longueur raisonnable) avant d'être stocké ou
+> renvoyé. Un champ optionnel absent, `null` ou vide vaut « pas de valeur ».
+> Toute autre réponse inattendue donne `502` pour un morceau, et l'entrée est
+> ignorée dans une recherche. Limite connue : la durée d'un appel est bornée
+> (5 s), pas la taille de la réponse.
+
 ### Music Track Vote (`/parties`)
 | Méthode | Route | Description |
 |---|---|---|
 | POST | `/parties` | Créer un événement de vote |
 | GET | `/parties` / `/parties/mine` | Événements publics / les miens |
-| GET | `/parties/:id` | Détail (respecte la visibilité) |
+| GET | `/parties/:id` | Détail (respecte la visibilité), avec `nowPlaying` et `playbackVersion` |
 | POST | `/parties/:id/invite` | Inviter un utilisateur (owner uniquement) |
 | POST | `/parties/:id/join` | Rejoindre un événement |
 | GET | `/parties/:id/queue` | File d'attente triée par votes |
-| POST | `/parties/:id/songs` | Suggérer un morceau |
+| POST | `/parties/:id/songs` | Suggérer un morceau : `{ "externalId": "..." }` |
 | POST/DELETE | `/parties/:id/songs/:partySongId/vote` | Voter / retirer son vote |
+| POST | `/parties/:id/next` | Passer au morceau suivant (owner uniquement) : `{ "expectedPlaybackVersion": n }`, voir ci-dessous |
 
 ### Music Playlist Editor (`/playlists`)
 | Méthode | Route | Description |
@@ -92,7 +111,7 @@ migration après une modification du schéma : `make migration name=nom_modifica
 | GET | `/playlists/:id` | Détail (respecte la visibilité) |
 | POST | `/playlists/:id/invite` | Inviter un collaborateur (owner uniquement) |
 | GET | `/playlists/:id/songs` | Morceaux triés par position |
-| POST | `/playlists/:id/songs` | Ajouter un morceau |
+| POST | `/playlists/:id/songs` | Ajouter un morceau : `{ "externalId": "...", "position"?: n }` |
 | PATCH | `/playlists/:id/songs/:playlistSongId` | Déplacer (verrou optimiste, voir ci-dessous) |
 | DELETE | `/playlists/:id/songs/:playlistSongId` | Retirer un morceau |
 
@@ -107,6 +126,24 @@ migration après une modification du schéma : `make migration name=nom_modifica
   correspond plus à la position en base, l'API renvoie `409 Conflict` au
   lieu d'écraser silencieusement le changement concurrent d'un autre
   utilisateur. Le client doit alors rafraîchir avant de réessayer.
+- **Morceau suivant d'une party** : verrou optimiste par compteur. Chaque
+  changement de lecture incrémente `playbackVersion` ; le client envoie la
+  version qu'il a vue (`expectedPlaybackVersion`, `0` avant le premier
+  morceau). La vérification et l'incrément se font dans une seule requête SQL,
+  dans la même transaction que le retrait du morceau de la file. Une version
+  dépassée renvoie `409` sans rien modifier, même si le même morceau est
+  rejoué (un compteur ne revient jamais en arrière, contrairement à l'id du
+  morceau). Sur plusieurs « suivant » simultanés, un seul passe. Quand la file
+  est vide, « suivant » arrête la lecture (`nowPlaying` devient `null`).
+- **Vote pendant un changement de morceau** : le morceau joué quitte la file ;
+  un vote qui arrive au même instant reçoit `404` (pas une erreur serveur).
+  Les votes du morceau sont supprimés avant son entrée dans la file, dans le
+  même ordre de verrouillage que le retrait d'un vote, pour éviter tout
+  interblocage.
+- **Import d'un morceau du catalogue** : chaque morceau est stocké une seule
+  fois (`externalId` unique, sous sa forme canonique). Si deux requêtes
+  importent le même morceau en même temps, la contrainte d'unicité refuse la
+  seconde, qui renvoie alors la ligne créée par la première.
 
 ## Prochaines étapes (non encore implémentées)
 

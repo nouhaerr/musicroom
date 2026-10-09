@@ -3,7 +3,7 @@ import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@n
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { PartiesService } from './parties.service';
 import { CreatePartyDto } from './dto/create-party.dto';
-import { InviteUserDto, SuggestSongDto, VoteDto } from './dto/party-actions.dto';
+import { InviteUserDto, NextTrackDto, SuggestSongDto, VoteDto } from './dto/party-actions.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PublicUser } from '../users/user.mapper';
@@ -48,6 +48,11 @@ export class PartiesController {
   @Get(':id/queue')
   getQueue(@CurrentUser() user: PublicUser, @Param('id') id: string, @Query() query: PaginationDto) {
     return this.partiesService.getQueue(id, user.id, query);
+  }
+
+  @Post(':id/next')
+  playNext(@CurrentUser() user: PublicUser, @Param('id') id: string, @Body() dto: NextTrackDto) {
+    return this.partiesService.playNext(id, user.id, dto);
   }
 
   @Post(':id/songs')

@@ -7,13 +7,18 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { SongsService } from '../songs/songs.service';
 import { EditLicense, Playlist, ResourceType, Visibility } from '../../generated/prisma';
 import { CreatePlaylistDto } from './dto/create-playlist.dto';
 import { AddSongToPlaylistDto, MoveSongDto } from './dto/playlist-actions.dto';
 
 @Injectable()
 export class PlaylistsService {
-  constructor(private readonly prisma: PrismaService, private readonly invitations: InvitationsService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly invitations: InvitationsService,
+    private readonly songsService: SongsService,
+  ) {}
 
   create(ownerId: string, dto: CreatePlaylistDto) {
     return this.prisma.playlist.create({
@@ -88,7 +93,7 @@ export class PlaylistsService {
     const playlist = await this.findByIdOrThrow(playlistId);
     await this.assertCanEdit(playlist, userId);
 
-    const song = await this.findOrCreateSong(dto);
+    const song = await this.songsService.findOrCreateByExternalId(dto.externalId);
     const position = dto.position ?? (await this.nextPosition(playlistId));
 
     try {
@@ -176,23 +181,6 @@ export class PlaylistsService {
       orderBy: { position: 'desc' },
     });
     return (last?.position ?? 0) + 1;
-  }
-
-  private async findOrCreateSong(dto: AddSongToPlaylistDto) {
-    if (dto.externalId) {
-      const existing = await this.prisma.song.findUnique({ where: { externalId: dto.externalId } });
-      if (existing) return existing;
-    }
-    return this.prisma.song.create({
-      data: {
-        externalId: dto.externalId,
-        title: dto.title,
-        artist: dto.artist,
-        durationSec: dto.durationSec,
-        sourceUri: dto.sourceUri,
-        thumbnailUrl: dto.thumbnailUrl,
-      },
-    });
   }
 
   private isUniqueConstraintError(e: unknown): boolean {
