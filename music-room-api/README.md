@@ -82,6 +82,14 @@ migration après une modification du schéma : `make migration name=nom_modifica
 > envoie seulement `externalId`, et le serveur récupère les données auprès du
 > catalogue (le back-end reste la référence, V.3).
 
+> Une réponse du catalogue est une donnée externe, même en HTTP 200 : chaque
+> champ lu est vérifié (type, entier dans ses bornes, URL http(s), texte non
+> vide, sans caractère NUL et de longueur raisonnable) avant d'être stocké ou
+> renvoyé. Un champ optionnel absent, `null` ou vide vaut « pas de valeur ».
+> Toute autre réponse inattendue donne `502` pour un morceau, et l'entrée est
+> ignorée dans une recherche. Limite connue : la durée d'un appel est bornée
+> (5 s), pas la taille de la réponse.
+
 ### Music Track Vote (`/parties`)
 | Méthode | Route | Description |
 |---|---|---|
