@@ -13,6 +13,7 @@ import { LoggingModule } from './common/logging/logging.module';
 import { PartiesModule } from './parties/parties.module';
 import { PlaylistsModule } from './playlists/playlists.module';
 import { validateEnvironment } from './config/environment';
+import { SongsModule } from './songs/songs.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { validateEnvironment } from './config/environment';
     InvitationsModule,
     PartiesModule,
     PlaylistsModule,
+    SongsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
