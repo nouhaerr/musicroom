@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SongsService } from '../songs/songs.service';
-import { EditLicense, Playlist, ResourceType, Visibility } from '../../generated/prisma';
+import { EditLicense, Playlist, Prisma, ResourceType, Visibility } from '../../generated/prisma';
 import { CreatePlaylistDto } from './dto/create-playlist.dto';
 import { AddSongToPlaylistDto, MoveSongDto } from './dto/playlist-actions.dto';
 
@@ -94,12 +94,14 @@ export class PlaylistsService {
     await this.assertCanEdit(playlist, userId);
 
     const song = await this.songsService.findOrCreateByExternalId(dto.externalId);
-    const position = dto.position ?? (await this.nextPosition(playlistId));
 
     try {
-      return await this.prisma.playlistSong.create({
-        data: { playlistId, songId: song.id, position, addedById: userId },
-        include: { song: true },
+      return await this.prisma.$transaction(async (tx) => {
+        const position = dto.position ?? (await this.nextPosition(tx, playlistId));
+        return tx.playlistSong.create({
+          data: { playlistId, songId: song.id, position, addedById: userId },
+          include: { song: true },
+        });
       });
     } catch (e: unknown) {
       if (this.isUniqueConstraintError(e)) {
@@ -117,20 +119,23 @@ export class PlaylistsService {
     const playlist = await this.findByIdOrThrow(playlistId);
     await this.assertCanEdit(playlist, userId);
 
-    const current = await this.prisma.playlistSong.findUnique({ where: { id: playlistSongId } });
-    if (!current || current.playlistId !== playlistId) {
-      throw new NotFoundException('Morceau introuvable dans cette playlist');
-    }
-    if (current.position !== dto.expectedPosition) {
-      throw new ConflictException(
-        'Ce morceau a été déplacé entre-temps par quelqu\'un d\'autre : rafraîchissez la playlist',
-      );
-    }
-
-    return this.prisma.playlistSong.update({
-      where: { id: playlistSongId },
-      data: { position: dto.position },
-      include: { song: true },
+    return this.prisma.$transaction(async (tx) => {
+      // The position the client saw is checked by the same statement that moves the song: of
+      // several simultaneous moves of one song, the database lets exactly one find it there
+      const { count } = await tx.playlistSong.updateMany({
+        where: { id: playlistSongId, playlistId, position: dto.expectedPosition },
+        data: { position: dto.position },
+      });
+      // After a move the row stays locked until the transaction ends, so it cannot be removed
+      // before it is read here. Without a move, this read tells "gone" from "moved by someone else".
+      const current = await tx.playlistSong.findFirst({ where: { id: playlistSongId, playlistId }, include: { song: true } });
+      if (!current) throw new NotFoundException('Morceau introuvable dans cette playlist');
+      if (count === 0) {
+        throw new ConflictException(
+          'Ce morceau a été déplacé entre-temps par quelqu\'un d\'autre : rafraîchissez la playlist',
+        );
+      }
+      return current;
     });
   }
 
@@ -138,12 +143,9 @@ export class PlaylistsService {
     const playlist = await this.findByIdOrThrow(playlistId);
     await this.assertCanEdit(playlist, userId);
 
-    const current = await this.prisma.playlistSong.findUnique({ where: { id: playlistSongId } });
-    if (!current || current.playlistId !== playlistId) {
-      throw new NotFoundException('Morceau introuvable dans cette playlist');
-    }
-
-    await this.prisma.playlistSong.delete({ where: { id: playlistSongId } });
+    // One statement: of several simultaneous removals, one deletes the song and the others find nothing
+    const { count } = await this.prisma.playlistSong.deleteMany({ where: { id: playlistSongId, playlistId } });
+    if (count === 0) throw new NotFoundException('Morceau introuvable dans cette playlist');
     return { deleted: true };
   }
 
@@ -175,8 +177,12 @@ export class PlaylistsService {
     return Boolean(match);
   }
 
-  private async nextPosition(playlistId: string): Promise<number> {
-    const last = await this.prisma.playlistSong.findFirst({
+  // The position after the last song. It locks the playlist until the transaction ends: a second
+  // addition "at the end" waits here, then reads the song the first one inserted. Without the
+  // lock, simultaneous additions all read the same last position.
+  private async nextPosition(tx: Prisma.TransactionClient, playlistId: string): Promise<number> {
+    await tx.$queryRaw`SELECT id FROM "Playlist" WHERE id = ${playlistId} FOR UPDATE`;
+    const last = await tx.playlistSong.findFirst({
       where: { playlistId },
       orderBy: { position: 'desc' },
     });
