@@ -168,12 +168,15 @@ describe('Email authentication and persisted sessions', () => {
     expect((await request('POST', '/auth/forgot-password', { email: a.email })).status).toBe(201);
     const [token, otherToken] = resets.get(a.email)!;
     expect(token).not.toBe(otherToken);
+    expect((await request('POST', '/auth/reset-password', { token, newPassword: 'No-number-password' })).status).toBe(400);
+    // Invalid input must not consume the reset token or revoke the current session.
+    expect((await request('GET', '/users/me', undefined, a.accessToken)).status).toBe(200);
     const responses = await Promise.all([
       request('POST', '/auth/reset-password', { token, newPassword: 'New-password-123!' }),
       request('POST', '/auth/reset-password', { token, newPassword: 'New-password-123!' }),
     ]);
     expect(responses.map(r => r.status).sort()).toEqual([201, 401]);
-    expect((await request('POST', '/auth/reset-password', { token: otherToken, newPassword: 'Another-password!' })).status).toBe(401);
+    expect((await request('POST', '/auth/reset-password', { token: otherToken, newPassword: 'Another-password-123!' })).status).toBe(401);
     for (const access of [a.accessToken, other.body.accessToken]) {
       expect((await request('GET', '/users/me', undefined, access)).status).toBe(401);
     }

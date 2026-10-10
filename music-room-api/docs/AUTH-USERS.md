@@ -35,14 +35,14 @@ marquées acceptées par la migration.
 
 | Route | Corps / paramètres | Résultat |
 |---|---|---|
-| `POST /auth/register` | `email`, `password` (8 caractères minimum), `name` | Utilisateur sans hash ; ne connecte pas automatiquement |
+| `POST /auth/register` | `email`, `password` (8 caractères minimum, dont un chiffre 0–9), `name` | Utilisateur sans hash ; ne connecte pas automatiquement |
 | `GET /auth/verify-email?token=...` | Token de validation | Email validé |
 | `POST /auth/resend-verification` | `email` | Réponse générique |
 | `POST /auth/login` | `email`, `password` | `accessToken`, `refreshToken`, `user` |
 | `POST /auth/refresh` | `refreshToken` | Nouveaux tokens et utilisateur |
 | `POST /auth/logout` | Access token dans le header | Révoque la session courante |
 | `POST /auth/forgot-password` | `email` | Réponse générique ; lien si le compte possède un mot de passe |
-| `POST /auth/reset-password` | `token`, `newPassword` (8 caractères minimum) | Mot de passe changé, sessions révoquées |
+| `POST /auth/reset-password` | `token`, `newPassword` (8 caractères minimum, dont un chiffre 0–9) | Mot de passe changé, sessions révoquées |
 | `POST /auth/google` | `idToken` du SDK Google | Connexion ou création du compte social |
 | `POST /auth/facebook` | `accessToken` du SDK Facebook | Connexion ou création du compte social |
 | `POST /auth/link/google` | `idToken` + access token Music Room dans le header | Lie Google au compte connecté |

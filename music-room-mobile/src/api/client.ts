@@ -20,6 +20,12 @@ export interface TokenStorage {
   deleteItem(key: string): Promise<void>;
 }
 
+export interface DeviceInfo {
+  platform: 'IOS' | 'ANDROID';
+  model: string;
+  appVersion?: string;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -71,13 +77,16 @@ export class ApiClient {
   private writes: Promise<void> = Promise.resolve();
   private listeners = new Set<(user: User | null) => void>();
   private deviceId: string | null = null;
+  private deviceFlight: Promise<void> | null = null;
   private storage: TokenStorage;
   private fetcher: typeof fetch;
+  private deviceInfo?: DeviceInfo;
 
-  constructor(baseUrl: string, storage: TokenStorage, fetcher: typeof fetch = fetch) {
+  constructor(baseUrl: string, storage: TokenStorage, fetcher: typeof fetch = fetch, deviceInfo?: DeviceInfo) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.storage = storage;
     this.fetcher = fetcher;
+    this.deviceInfo = deviceInfo;
   }
 
   get user() { return this.session?.user ?? null; }
@@ -104,6 +113,7 @@ export class ApiClient {
     this.generation++;
     this.session = null;
     this.deviceId = null;
+    this.deviceFlight = null;
     this.refreshFlight = null;
     this.notify();
     await this.persist(null);
@@ -176,6 +186,16 @@ export class ApiClient {
   }
 
   async request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+    const generation = this.generation;
+    if (this.deviceInfo) {
+      await this.registerDevice(this.deviceInfo.platform, this.deviceInfo.model, this.deviceInfo.appVersion);
+      if (generation !== this.generation) throw new ApiError(401, 'Session fermée.');
+    }
+    return this.authenticatedRequest<T>(path, method, body);
+  }
+
+  // Device discovery/registration must not wait on its own readiness gate.
+  private async authenticatedRequest<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
     const token = this.session?.accessToken;
     const generation = this.generation;
     if (!token) throw new ApiError(401, 'Veuillez vous connecter.');
@@ -227,6 +247,7 @@ export class ApiClient {
   private async authenticate(path: string, acquireBody: () => Promise<Record<string, string> | null>): Promise<boolean> {
     const generation = ++this.generation;
     this.deviceId = null;
+    this.deviceFlight = null;
     const body = await acquireBody();
     if (!body || generation !== this.generation) return false;
     const session = sessionFrom(await this.transport(path, 'POST', body));
@@ -274,24 +295,49 @@ export class ApiClient {
     return profile;
   }
 
-  async registerDevice(platform: 'IOS' | 'ANDROID', model: string) {
+  registerDevice(platform: 'IOS' | 'ANDROID', model: string, appVersion = '0.1.0'): Promise<void> {
+    if (!this.user) return Promise.reject(new ApiError(401, 'Veuillez vous connecter.'));
+    if (this.deviceId) return Promise.resolve();
+    if (this.deviceFlight) return this.deviceFlight;
+    const flight = this.prepareDevice({ platform, model, appVersion });
+    this.deviceFlight = flight;
+    void flight.finally(() => { if (this.deviceFlight === flight) this.deviceFlight = null; }).catch(() => undefined);
+    return flight;
+  }
+
+  private async prepareDevice(info: DeviceInfo) {
     const generation = this.generation;
     const userId = this.user?.id;
-    if (!userId) return;
+    const assertActive = () => {
+      if (generation !== this.generation || !userId || this.user?.id !== userId) throw new ApiError(401, 'Session fermée.');
+    };
     const key = 'sonora.device.v1';
     const raw = await this.storage.getItem(key);
     let saved: { baseUrl?: string; userId?: string; id?: string } | null = null;
     try { saved = raw ? JSON.parse(raw) : null; } catch { /* Replace malformed local metadata. */ }
-    if (generation !== this.generation) return;
-    if (saved?.baseUrl === this.baseUrl && saved?.userId === userId && typeof saved?.id === 'string') {
-      this.deviceId = saved.id;
-      return;
+    assertActive();
+    if (saved?.baseUrl === this.baseUrl && saved?.userId === userId && typeof saved?.id === 'string' && saved.id) {
+      // Only reuse an ID still present in this user's server-side device list.
+      // Traverse pages: another device may have been registered more recently.
+      for (let page = 1; ; page++) {
+        const devices = await this.authenticatedRequest<{ id: string }[]>(`/devices?page=${page}&limit=100`);
+        assertActive();
+        if (!Array.isArray(devices) || !devices.every(device => typeof device?.id === 'string')) {
+          throw new Error('Réponse de liste des appareils invalide.');
+        }
+        if (devices.some(device => device.id === saved.id)) {
+          this.deviceId = saved.id;
+          return;
+        }
+        if (devices.length < 100) break;
+      }
     }
-    const device = await this.request<{ id: string }>('/devices', 'POST', { platform, model, appVersion: '0.1.0' });
-    if (generation !== this.generation) return;
-    if (typeof device?.id !== 'string') throw new Error('Réponse d’enregistrement de l’appareil invalide.');
-    this.deviceId = device.id;
+    const device = await this.authenticatedRequest<{ id: string }>('/devices', 'POST', info);
+    assertActive();
+    if (typeof device?.id !== 'string' || !device.id) throw new Error('Réponse d’enregistrement de l’appareil invalide.');
     await this.storage.setItem(key, JSON.stringify({ baseUrl: this.baseUrl, userId, id: device.id }));
+    assertActive();
+    this.deviceId = device.id;
   }
 
   register(name: string, email: string, password: string) {

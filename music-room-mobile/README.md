@@ -20,7 +20,10 @@ Ce dossier est indépendant de `music-room-api` : ne pas y copier le `.env` du b
 - Refresh token dans Expo SecureStore ; access token uniquement en mémoire.
 - Un seul renouvellement partagé entre les requêtes concurrentes ; pas de boucle de retry.
 - Enregistrement de l’appareil après authentification, puis header `X-Device-Id`
-  sur les requêtes authentifiées quand l’identifiant est disponible.
+  sur les requêtes de profil/social, qui attendent la fin de l’enregistrement.
+- Conditions et confidentialité consultables hors ligne depuis l’inscription,
+  dans une fenêtre qui conserve le formulaire. Textes de version de test à finaliser
+  avant publication (responsable, hébergement, conservation et procédure de suppression).
 
 Les écrans invitations/appareils, les services musicaux et Facebook natif
 ne sont pas encore implémentés. Les tests de confidentialité backend existent ;
@@ -91,16 +94,20 @@ La déconnexion efface la session locale et tente sa révocation serveur. Si cel
 n’est pas confirmée, l’utilisateur en est informé ; aucune révocation distante
 n’est prétendue réussie. Un reset réussi ferme aussi la session locale.
 
-`POST /devices` exige un JWT : l’enregistrement intervient après connexion ou
-restauration, pas avant. L’identifiant conservé est associé au serveur et à
-l’utilisateur. Le premier appel d’enregistrement n’a pas encore de `X-Device-Id`.
-En cas d’échec, l’authentification reste utilisable et un message annonce le nouvel
-essai à la prochaine connexion. Les appareils supprimés côté serveur et le
-renouvellement de leur enregistrement restent à traiter dans le futur écran appareils.
+`POST /devices` exige un JWT : la préparation intervient au premier appel protégé
+après connexion ou restauration. Les appels de profil/social attendent une même
+préparation partagée. L’identifiant conservé est associé au serveur et à l’utilisateur ;
+la liste paginée `GET /devices` le valide avant réutilisation à chaque nouvelle session
+mobile. Si l’appareil a été supprimé, il est enregistré à nouveau avant l’appel métier.
+Les appels de découverte/enregistrement n’ont pas encore de `X-Device-Id` validé.
+En cas d’échec, le profil affiche l’erreur et **Réessayer** relance la préparation ;
+aucun appel métier ne part sans identifiant. La déconnexion locale reste disponible.
+Une suppression distante pendant la session courante est détectée à la prochaine
+connexion/restauration ; il n’y a pas de notification de suppression en temps réel.
 
 ## Vérifications
 
-Validation locale du 10 octobre 2026 : TypeScript, 34 tests du client et export
+Validation locale du 10 octobre 2026 : TypeScript, 45 tests du client et export
 Android/iOS réussis. Les 21 contrôles `expo-doctor` passent également après l’ajout
 des dépendances natives Google et du client de développement.
 Les alertes d’audit décrites plus bas restent présentes.
@@ -115,6 +122,9 @@ Les tests du client utilisent fetch et le stockage simulés : courses de refresh
 réponses 401 tardives, échec réseau/stockage, logout pendant un refresh, reset,
 origine du serveur et enregistrement d’appareil. Le refus 403 est conservé sans
 renouveler la session ; le filtrage des profils reste contrôlé côté backend.
+Les six tests appareils couvrent les appels concurrents, la pagination, les IDs
+supprimés, une validation serveur indisponible, une déconnexion pendant la préparation
+et la revalidation après reconnexion.
 
 L’export produit les bundles Android/iOS ; ce n’est pas une compilation APK/IPA
 ni un test sur appareil. La recette Android et iOS reste **à exécuter** :
@@ -177,3 +187,11 @@ Références : [création Expo](https://docs.expo.dev/more/create-expo/),
 [SecureStore](https://docs.expo.dev/versions/latest/sdk/securestore/),
 [Google natif](https://docs.expo.dev/guides/google-authentication/),
 [Facebook natif](https://docs.expo.dev/guides/facebook-authentication/).
+
+## Validation des nouveaux mots de passe
+
+Inscription et réinitialisation exigent au moins huit caractères et un chiffre (0–9),
+côté mobile et API. Les retours sous les champs apparaissent après saisie, sortie du
+champ ou tentative d’envoi ; aucun message de validation ne s’affiche initialement.
+La confirmation se recalcule quand l’un des mots de passe change. Les mots de passe
+existants restent acceptés sur la route de connexion.

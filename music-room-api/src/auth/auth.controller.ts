@@ -36,7 +36,7 @@ export class AuthController {
   @Header('Content-Type', 'text/html; charset=utf-8')
   async verifyEmail(@Query('token') token: string) {
     await this.authService.verifyEmail(token);
-    return this.redirectPage('Adresse email confirmée', 'Votre adresse email a bien été confirmée. Vous pouvez maintenant vous connecter.', this.mobileLink('verified'));
+    return this.redirectPage('Email verified', 'Your email address has been confirmed. You can now log in.', this.mobileLink('verified'));
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -85,7 +85,7 @@ export class AuthController {
   @Header('Content-Type', 'text/html; charset=utf-8')
   resetPasswordLink(@Query('token') token: string) {
     if (!token?.trim()) throw new BadRequestException('Token requis');
-    return this.redirectPage('Réinitialisation du mot de passe', 'Ouvrez Sonora pour choisir votre nouveau mot de passe.', this.mobileLink('reset-password', token));
+    return this.redirectPage('Reset your password', 'Open Sonora to choose a new password.', this.mobileLink('reset-password', token));
   }
 
   @Post('facebook')
@@ -123,6 +123,7 @@ export class AuthController {
     const escape = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;')
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     const safeUrl = escape(mobileUrl);
-    return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} - Sonora</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#10141e;color:#f3f3e9;font:16px system-ui,sans-serif}.box{width:min(90vw,460px);padding:32px;border:1px solid #2d3547;border-radius:20px;background:#1b2130;text-align:center}h1{font-size:26px}p{color:#b4bdce;line-height:1.5}a{display:inline-block;margin-top:16px;padding:14px 20px;border-radius:12px;background:#b7f576;color:#16240e;font-weight:700;text-decoration:none}</style></head><body><main class="box"><h1>${escape(title)}</h1><p>${escape(message)}</p><a href="${safeUrl}">Ouvrir Sonora</a></main></body></html>`;
+    const scriptUrl = JSON.stringify(mobileUrl).replace(/</g, '\\u003c');
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)} - Sonora</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#10141e;color:#f3f3e9;font:16px system-ui,sans-serif}.box{width:min(90vw,460px);padding:32px;border:1px solid #2d3547;border-radius:20px;background:#1b2130;text-align:center}h1{font-size:26px}p{color:#b4bdce;line-height:1.5}a{display:inline-block;margin-top:16px;padding:14px 20px;border-radius:12px;background:#b7f576;color:#16240e;font-weight:700;text-decoration:none}</style></head><body><main class="box"><h1>${escape(title)}</h1><p>${escape(message)}</p><a href="${safeUrl}">Open Sonora</a></main><script>window.setTimeout(function(){window.location.href=${scriptUrl};},120);</script></body></html>`;
   }
 }
