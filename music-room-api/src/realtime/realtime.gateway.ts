@@ -11,15 +11,20 @@ import {
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
 import { Server, Socket } from 'socket.io';
+import { Platform } from '../../generated/prisma';
 import { SessionsService } from '../auth/sessions.service';
 import { PartiesService } from '../parties/parties.service';
 import { PlaylistsService } from '../playlists/playlists.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { RealtimeService } from './realtime.service';
 
 const MAX_MESSAGE_BYTES = 16 * 1024; // clients only ever send small messages
 const MAX_TIMER_MS = 2 ** 31 - 1; // the longest delay setTimeout accepts
 const MAX_SUBSCRIPTIONS = 20; // how many parties and playlists one connection may watch at the same time
+const MAX_CONNECTIONS_PER_USER = 5; // a phone, a tablet, and room for a reconnection that overlaps the old connection
+const MESSAGE_WINDOW_MS = 10_000;
+const MAX_MESSAGES_PER_WINDOW = 30; // per connection: an app sends a few messages when a screen opens or closes
 const SNAPSHOT_INTERVAL_MS = 200; // at most 5 snapshots per second per room: changes in between are merged
 const RETRY_DELAY_MS = 1000; // after a failed read (e.g. database busy), try again this much later
 
@@ -38,6 +43,7 @@ export interface SocketData {
   userId: string;
   sessionId: string;
   tokenExpiresAt: number;
+  device: { id: string; platform: Platform; appVersion: string } | null; // the one the app registered, for the action log
 }
 export type AuthedSocket = Socket<any, any, any, SocketData>;
 
@@ -46,7 +52,7 @@ export type AuthedSocket = Socket<any, any, any, SocketData>;
 export type Ack =
   | { ok: true }
   | { ok: false; error: { code: AckErrorCode; message: string } };
-type AckErrorCode = 'BAD_REQUEST' | 'UNAUTHORIZED' | 'FORBIDDEN' | 'NOT_FOUND' | 'TOO_MANY' | 'INTERNAL';
+type AckErrorCode = 'BAD_REQUEST' | 'UNAUTHORIZED' | 'FORBIDDEN' | 'NOT_FOUND' | 'TOO_MANY' | 'RATE_LIMITED' | 'INTERNAL';
 
 const refuse = (code: AckErrorCode, message: string): Ack => ({ ok: false, error: { code, message } });
 const EXPECTED_PAYLOAD = 'Expected { type: "party" | "playlist", id: "<uuid>" }';
@@ -64,7 +70,11 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
   // One entry per room that has snapshots being sent; removed as soon as there is nothing left
   private readonly pending = new Map<string, Pending>();
 
+  // How many connections each user has open; an entry is removed with the user's last connection
+  private readonly connections = new Map<string, number>();
+
   constructor(
+    private readonly prisma: PrismaService,
     private readonly sessions: SessionsService,
     private readonly parties: PartiesService,
     private readonly playlists: PlaylistsService,
@@ -82,6 +92,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
         socket.data.userId = user.id;
         socket.data.sessionId = sessionId;
         socket.data.tokenExpiresAt = expiresAt.getTime();
+        socket.data.device = await this.deviceOf(socket, user.id);
         next();
       } catch (err) {
         // Anything other than a refused login is a server problem (e.g. the database is down)
@@ -97,6 +108,10 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
   // that exact moment. Reconnecting is the client's job: it gets a fresh token (POST
   // /auth/refresh) and opens a new connection, which goes through the same check again.
   handleConnection(socket: AuthedSocket) {
+    if (!this.countConnection(socket)) return;
+    this.limitMessages(socket);
+    this.logAction(socket, 'connect');
+
     const delay = Math.min(Math.max(socket.data.tokenExpiresAt - Date.now(), 0), MAX_TIMER_MS);
     const timer = setTimeout(() => {
       socket.emit('session:expired');
@@ -109,7 +124,20 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
   @SubscribeMessage('subscribe')
   async subscribe(@ConnectedSocket() socket: AuthedSocket, @MessageBody() payload: unknown): Promise<Ack> {
     const target = parse(payload);
-    if (!target) return refuse('BAD_REQUEST', EXPECTED_PAYLOAD);
+    const ack = target ? await this.join(socket, target) : refuse('BAD_REQUEST', EXPECTED_PAYLOAD);
+    this.logAction(socket, target ? `subscribe ${target.type}` : 'subscribe', ack);
+    return ack;
+  }
+
+  @SubscribeMessage('unsubscribe')
+  async unsubscribe(@ConnectedSocket() socket: AuthedSocket, @MessageBody() payload: unknown): Promise<Ack> {
+    const target = parse(payload);
+    const ack = target ? await this.leave(socket, target) : refuse('BAD_REQUEST', EXPECTED_PAYLOAD);
+    this.logAction(socket, target ? `unsubscribe ${target.type}` : 'unsubscribe', ack);
+    return ack;
+  }
+
+  private async join(socket: AuthedSocket, target: SubscribeDto): Promise<Ack> {
     if (!(await this.stillLoggedIn(socket))) return refuse('UNAUTHORIZED', 'Session expired or revoked');
 
     try {
@@ -129,12 +157,74 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
     return { ok: true };
   }
 
-  @SubscribeMessage('unsubscribe')
-  async unsubscribe(@ConnectedSocket() socket: AuthedSocket, @MessageBody() payload: unknown): Promise<Ack> {
-    const target = parse(payload);
-    if (!target) return refuse('BAD_REQUEST', EXPECTED_PAYLOAD);
+  private async leave(socket: AuthedSocket, target: SubscribeDto): Promise<Ack> {
     await socket.leave(roomOf(target));
     return { ok: true };
+  }
+
+  // One more connection for this user, until it closes. Over the limit, the connection is told
+  // why and closed. Counting here, where nothing is awaited, keeps simultaneous connections
+  // from slipping past the limit together.
+  private countConnection(socket: AuthedSocket): boolean {
+    const { userId } = socket.data;
+    const open = (this.connections.get(userId) ?? 0) + 1;
+    this.connections.set(userId, open);
+    socket.on('disconnect', () => {
+      const left = (this.connections.get(userId) ?? 1) - 1;
+      if (left > 0) this.connections.set(userId, left);
+      else this.connections.delete(userId);
+    });
+    if (open <= MAX_CONNECTIONS_PER_USER) return true;
+    socket.emit('connection:refused', { code: 'TOO_MANY_CONNECTIONS' });
+    socket.disconnect(true);
+    return false;
+  }
+
+  // The global rate limit of the HTTP routes does not see socket messages: each connection gets
+  // its own. A message over the limit is answered right here, before any handler runs, so it
+  // costs no database query.
+  private limitMessages(socket: AuthedSocket) {
+    let windowStart = Date.now();
+    let messages = 0;
+    socket.use((packet, next) => {
+      const now = Date.now();
+      if (now - windowStart >= MESSAGE_WINDOW_MS) {
+        windowStart = now;
+        messages = 0;
+      }
+      messages += 1;
+      if (messages <= MAX_MESSAGES_PER_WINDOW) return next();
+      const answer: unknown = packet[packet.length - 1];
+      const refusal = refuse('RATE_LIMITED', `At most ${MAX_MESSAGES_PER_WINDOW} messages every ${MESSAGE_WINDOW_MS / 1000} seconds`);
+      if (typeof answer === 'function') answer(refusal);
+      // Logged once per window: logging every refused message would turn a flood into database writes
+      if (messages === MAX_MESSAGES_PER_WINDOW + 1) this.logAction(socket, 'message', refusal);
+    });
+  }
+
+  // The device the app registered (POST /devices) and names in the handshake, if it is this user's
+  private async deviceOf(socket: Socket, userId: string): Promise<SocketData['device']> {
+    const id = extractDeviceId(socket);
+    if (!id) return null;
+    return this.prisma.device.findFirst({ where: { id, userId }, select: { id: true, platform: true, appVersion: true } });
+  }
+
+  // Every action of the app is logged with its device, like the HTTP routes are (subject V.6).
+  // Not awaited, and a logging problem never breaks the action itself.
+  private logAction(socket: AuthedSocket, action: string, ack?: Ack) {
+    const { userId, device } = socket.data;
+    const data = {
+      userId,
+      action: `WS ${action}`,
+      platform: device?.platform,
+      appVersion: device?.appVersion,
+      metadata: ack && !ack.ok ? { error: ack.error.code } : undefined,
+    };
+    this.prisma.actionLog
+      .create({ data: { ...data, deviceId: device?.id } })
+      // The device may have been deleted since the connection opened: keep the log, without the link
+      .catch(() => this.prisma.actionLog.create({ data }))
+      .catch((err: Error) => this.logger.error(`Action log failed: ${err.message}`));
   }
 
   // The same rule as the REST route: whoever may GET the resource may watch it
@@ -257,6 +347,15 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
     this.logger.error(`Subscribe failed: ${(err as Error).message}`);
     return refuse('INTERNAL', 'Internal error');
   }
+}
+
+// The device id comes the same two ways as the token: the handshake `auth` object, or the
+// X-Device-Id header that the HTTP routes use
+function extractDeviceId(socket: Socket): string | null {
+  const fromAuth: unknown = socket.handshake.auth?.deviceId;
+  const fromHeader = socket.handshake.headers['x-device-id'];
+  const id = fromAuth ?? fromHeader;
+  return typeof id === 'string' && id.length > 0 ? id : null;
 }
 
 // The token comes from the handshake `auth` object, or from an Authorization header.

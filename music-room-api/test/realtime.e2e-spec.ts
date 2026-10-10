@@ -1595,3 +1595,269 @@ describe('Parties and playlists on the same connection', () => {
     expect(await watch(socket, await party(owner.accessToken))).toEqual(refusal('TOO_MANY'));
   });
 });
+
+// -----------------------------------------------------------------
+// Limits and action logs of the socket
+// -----------------------------------------------------------------
+type LoggedAction = { action: string; deviceId: string | null; platform: string | null; appVersion: string | null; metadata: unknown };
+
+async function registerDevice(token: string): Promise<string> {
+  const device = await request('POST', '/devices', { platform: 'ANDROID', model: 'Pixel 8', appVersion: '1.2.0' }, token);
+  expect(device.status).toBe(201);
+  return device.body.id;
+}
+
+// The socket actions logged for a user, oldest first, once there are `count` of them (fails after 3 s)
+async function socketLogs(userId: string, count: number): Promise<LoggedAction[]> {
+  const read = () => app.get(PrismaService).actionLog.findMany({
+    where: { userId, action: { startsWith: 'WS ' } },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    select: { action: true, deviceId: true, platform: true, appVersion: true, metadata: true },
+  });
+  const deadline = Date.now() + 3000;
+  let logs = await read();
+  while (logs.length < count) {
+    if (Date.now() > deadline) throw new Error(`Expected ${count} socket logs, found ${logs.length}`);
+    await sleep(20);
+    logs = await read();
+  }
+  return logs;
+}
+const actions = (logs: LoggedAction[]) => logs.map((log) => log.action).sort();
+
+// How many connections the server currently holds for one user
+const connectionsOf = (userId: string) =>
+  [...app.get(RealtimeGateway).server.sockets.sockets.values()].filter((socket) => socket.data.userId === userId).length;
+
+// Opens a connection and records what the server tells it from the very first moment
+function opening(token: string) {
+  const socket = io(base, { transports: ['websocket'], reconnection: false, forceNew: true, auth: { token } });
+  sockets.push(socket);
+  const told: unknown[][] = [];
+  socket.on('connection:refused', (payload: unknown) => told.push(['connection:refused', payload]));
+  socket.on('disconnect', (reason: string) => told.push(['disconnect', reason]));
+  return { socket, told };
+}
+
+describe('Realtime action logs: every socket action is logged like an HTTP one', () => {
+  it.each([
+    ['the handshake auth object', (token: string, deviceId: string) => ({ auth: { token, deviceId } })],
+    ['an X-Device-Id header', (token: string, deviceId: string) => ({ auth: { token }, extraHeaders: { 'X-Device-Id': deviceId } })],
+  ])('logs the connection and each message with the device named in %s', async (_label, options) => {
+    const user = await account();
+    const deviceId = await registerDevice(user.accessToken);
+    const partyId = await party(user.accessToken);
+    const playlistId = await playlist(user.accessToken);
+    const socket = await connect(options(user.accessToken, deviceId));
+
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+    expect(await send(socket, 'unsubscribe', { type: 'party', id: partyId })).toEqual({ ok: true });
+    expect(await watchPlaylist(socket, playlistId)).toEqual({ ok: true });
+
+    const logs = await socketLogs(user.id, 4);
+    expect(actions(logs)).toEqual(['WS connect', 'WS subscribe party', 'WS subscribe playlist', 'WS unsubscribe party']);
+    for (const log of logs) expect(log).toMatchObject({ deviceId, platform: 'ANDROID', appVersion: '1.2.0', metadata: null });
+  });
+
+  it('logs a refused message with the reason', async () => {
+    const owner = await account();
+    const stranger = await account();
+    const closed = await party(owner.accessToken, 'PRIVATE');
+    const socket = await connect({ auth: { token: stranger.accessToken } });
+
+    expect(await watch(socket, closed)).toEqual(refusal('FORBIDDEN'));
+    expect(await watchPlaylist(socket, randomUUID())).toEqual(refusal('NOT_FOUND'));
+    expect(await send(socket, 'subscribe', { type: 'user', id: closed })).toEqual(refusal('BAD_REQUEST'));
+    expect(await send(socket, 'unsubscribe', 'party')).toEqual(refusal('BAD_REQUEST'));
+
+    const logs = await socketLogs(stranger.id, 5);
+    expect(logs.map(({ action, metadata }) => ({ action, metadata })).sort((a, b) => a.action.localeCompare(b.action))).toEqual([
+      { action: 'WS connect', metadata: null },
+      { action: 'WS subscribe', metadata: { error: 'BAD_REQUEST' } },
+      { action: 'WS subscribe party', metadata: { error: 'FORBIDDEN' } },
+      { action: 'WS subscribe playlist', metadata: { error: 'NOT_FOUND' } },
+      { action: 'WS unsubscribe', metadata: { error: 'BAD_REQUEST' } },
+    ]);
+  });
+
+  it("logs without a device when the app names none, one that does not exist, or someone else's", async () => {
+    const user = await account();
+    const other = await account();
+    const foreign = await registerDevice(other.accessToken);
+
+    await connect({ auth: { token: user.accessToken } });
+    await connect({ auth: { token: user.accessToken, deviceId: randomUUID() } });
+    await connect({ auth: { token: user.accessToken, deviceId: foreign } });
+    await connect({ auth: { token: user.accessToken, deviceId: { $ne: null } } });
+
+    const logs = await socketLogs(user.id, 4);
+    expect(actions(logs)).toEqual(['WS connect', 'WS connect', 'WS connect', 'WS connect']);
+    for (const log of logs) expect(log).toMatchObject({ deviceId: null, platform: null, appVersion: null });
+  });
+
+  it('keeps logging when the device was deleted after the connection opened', async () => {
+    const user = await account();
+    const deviceId = await registerDevice(user.accessToken);
+    const partyId = await party(user.accessToken);
+    const socket = await connect({ auth: { token: user.accessToken, deviceId } });
+    await socketLogs(user.id, 1);
+    expect((await request('DELETE', `/devices/${deviceId}`, undefined, user.accessToken)).status).toBe(200);
+
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+
+    const logs = await socketLogs(user.id, 2);
+    expect(logs[1]).toMatchObject({ action: 'WS subscribe party', deviceId: null, platform: 'ANDROID', appVersion: '1.2.0' });
+  });
+
+  it('answers the message even when the log cannot be written', async () => {
+    const user = await account();
+    const partyId = await party(user.accessToken);
+    const socket = await connect({ auth: { token: user.accessToken } });
+    await socketLogs(user.id, 1);
+    const errors = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const writes = jest.spyOn(app.get(PrismaService).actionLog, 'create').mockRejectedValue(new Error('disk full') as never);
+    spies.push(errors, writes);
+
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+    await until(() => errors.mock.calls.some(([message]) => String(message).startsWith('Action log failed')));
+
+    expect(errors.mock.calls.map(([message]) => String(message)).filter((message) => message.startsWith('Action log'))).toEqual(['Action log failed: disk full']);
+    expect(watchers(partyId)).toBe(1);
+  });
+});
+
+describe('Realtime limits: messages per connection', () => {
+  // Fills the allowance of a connection with 30 harmless messages
+  async function useAllowance(socket: Socket) {
+    const id = randomUUID();
+    for (let i = 0; i < 30; i++) expect(await send(socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+  }
+
+  it('answers RATE_LIMITED to every message over 30 in 10 seconds, without doing any work', async () => {
+    const user = await account();
+    const partyId = await party(user.accessToken);
+    const socket = await connect({ auth: { token: user.accessToken } });
+    await useAllowance(socket);
+    const sessionChecks = jest.spyOn(app.get(SessionsService), 'verifyAccessToken');
+    const accessChecks = jest.spyOn(app.get(PartiesService), 'getDetail');
+    spies.push(sessionChecks, accessChecks);
+
+    expect(await watch(socket, partyId)).toEqual(refusal('RATE_LIMITED'));
+    expect(await send(socket, 'unsubscribe', { type: 'party', id: partyId })).toEqual(refusal('RATE_LIMITED'));
+
+    expect(sessionChecks).not.toHaveBeenCalled();
+    expect(accessChecks).not.toHaveBeenCalled();
+    expect(watchers(partyId)).toBe(0);
+    expect(socket.connected).toBe(true);
+  });
+
+  it('counts every message, also the ones no handler knows', async () => {
+    const user = await account();
+    const partyId = await party(user.accessToken);
+    const socket = await connect({ auth: { token: user.accessToken } });
+
+    for (let i = 0; i < 30; i++) socket.emit('no-such-event', { i });
+
+    expect(await watch(socket, partyId)).toEqual(refusal('RATE_LIMITED'));
+  });
+
+  it('gives each connection its own allowance', async () => {
+    const user = await account();
+    const partyId = await party(user.accessToken);
+    const busy = await connect({ auth: { token: user.accessToken } });
+    const quiet = await connect({ auth: { token: user.accessToken } });
+    await useAllowance(busy);
+
+    expect(await watch(busy, partyId)).toEqual(refusal('RATE_LIMITED'));
+    expect(await watch(quiet, partyId)).toEqual({ ok: true });
+  });
+
+  it('accepts messages again once the 10 seconds have passed', async () => {
+    const user = await account();
+    const partyId = await party(user.accessToken);
+    const socket = await connect({ auth: { token: user.accessToken } });
+    await useAllowance(socket);
+    expect(await watch(socket, partyId)).toEqual(refusal('RATE_LIMITED'));
+
+    const now = Date.now.bind(Date);
+    spies.push(jest.spyOn(Date, 'now').mockImplementation(() => now() + 5_000));
+    expect(await watch(socket, partyId)).toEqual(refusal('RATE_LIMITED'));
+    spies.push(jest.spyOn(Date, 'now').mockImplementation(() => now() + 10_001));
+
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+  });
+
+  it('logs the first refused message of a window, and only that one', async () => {
+    const user = await account();
+    const socket = await connect({ auth: { token: user.accessToken } });
+    await useAllowance(socket);
+
+    for (let i = 0; i < 5; i++) expect(await send(socket, 'unsubscribe', { type: 'party', id: randomUUID() })).toEqual(refusal('RATE_LIMITED'));
+    await sleep(300);
+
+    const logs = await socketLogs(user.id, 32);
+    expect(logs).toHaveLength(32);
+    expect(logs.filter((log) => log.action === 'WS message')).toMatchObject([{ metadata: { error: 'RATE_LIMITED' } }]);
+    expect(logs.filter((log) => log.action === 'WS unsubscribe party')).toHaveLength(30);
+  });
+});
+
+describe('Realtime limits: connections per user', () => {
+  it('lets a user hold 5 connections, and tells a 6th why before closing it', async () => {
+    const user = await account();
+    const held: Socket[] = [];
+    for (let i = 0; i < 5; i++) held.push(await connect({ auth: { token: user.accessToken } }));
+
+    const sixth = opening(user.accessToken);
+    await until(() => sixth.told.length === 2);
+
+    expect(sixth.told).toEqual([['connection:refused', { code: 'TOO_MANY_CONNECTIONS' }], ['disconnect', 'io server disconnect']]);
+    expect(held.every((socket) => socket.connected)).toBe(true);
+    expect(connectionsOf(user.id)).toBe(5);
+    // The refused one was never a connection of the app: it is not logged as one
+    await sleep(200);
+    expect(actions(await socketLogs(user.id, 5))).toEqual(Array(5).fill('WS connect'));
+  });
+
+  it('frees a place when a connection closes, and forgets a user who has none left', async () => {
+    const user = await account();
+    const held: Socket[] = [];
+    for (let i = 0; i < 5; i++) held.push(await connect({ auth: { token: user.accessToken } }));
+    const counts = (app.get(RealtimeGateway) as unknown as { connections: Map<string, number> }).connections;
+    expect(counts.get(user.id)).toBe(5);
+
+    held[0].disconnect();
+    await until(() => connectionsOf(user.id) === 4);
+    const again = opening(user.accessToken);
+    await until(() => again.socket.connected);
+    await sleep(300);
+    expect(again.told).toEqual([]);
+
+    for (const socket of [...held, again.socket]) socket.disconnect();
+    await until(() => connectionsOf(user.id) === 0);
+    expect(counts.has(user.id)).toBe(false);
+  });
+
+  it('counts each user separately', async () => {
+    const user = await account();
+    const other = await account();
+    for (let i = 0; i < 5; i++) await connect({ auth: { token: user.accessToken } });
+
+    const theirs = opening(other.accessToken);
+    await until(() => theirs.socket.connected);
+    await sleep(300);
+
+    expect(theirs.told).toEqual([]);
+  });
+
+  it('holds the limit when many connections open at the same moment', async () => {
+    const user = await account();
+
+    const all = Array.from({ length: 9 }, () => opening(user.accessToken));
+    await until(() => all.filter(({ told }) => told.length === 2).length === 4);
+    await sleep(300);
+
+    expect(all.filter(({ socket }) => socket.connected)).toHaveLength(5);
+    expect(connectionsOf(user.id)).toBe(5);
+  });
+});
