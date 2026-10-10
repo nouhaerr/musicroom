@@ -1,6 +1,6 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
+import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '../../generated/prisma';
@@ -22,13 +22,13 @@ export class SessionsService {
 
   private tokens(userId: string, email: string, sid: string) {
     const accessToken = this.jwt.sign({ sub: userId, email, sid, type: 'access' }, {
-      secret: this.config.get<string>('JWT_ACCESS_SECRET', 'dev_access_secret'),
-      expiresIn: this.config.get<string>('JWT_ACCESS_EXPIRES_IN', '15m'),
+      secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
+      expiresIn: this.config.get<JwtSignOptions['expiresIn']>('JWT_ACCESS_EXPIRES_IN', '15m'),
       algorithm: 'HS256',
     });
     const refreshToken = this.jwt.sign({ sub: userId, email, sid, type: 'refresh', jti: randomUUID() }, {
-      secret: this.config.get<string>('JWT_REFRESH_SECRET', 'dev_refresh_secret'),
-      expiresIn: this.config.get<string>('JWT_REFRESH_EXPIRES_IN', '7d'),
+      secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
+      expiresIn: this.config.get<JwtSignOptions['expiresIn']>('JWT_REFRESH_EXPIRES_IN', '7d'),
       algorithm: 'HS256',
     });
     const expiresAt = new Date(this.jwt.decode<{ exp: number }>(refreshToken).exp * 1000);
@@ -56,7 +56,7 @@ export class SessionsService {
     let payload: JwtPayload;
     try {
       payload = this.jwt.verify<JwtPayload>(token, {
-        secret: this.config.get<string>('JWT_REFRESH_SECRET', 'dev_refresh_secret'),
+        secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
         algorithms: ['HS256'],
       });
     } catch { throw new UnauthorizedException('Token invalide ou expiré'); }

@@ -28,9 +28,7 @@ async function bootstrap() {
 
   const port = process.env.PORT ?? 3000;
   await app.listen(port);
-  // eslint-disable-next-line no-console
   console.log(`Music Room API listening on http://localhost:${port}`);
-  // eslint-disable-next-line no-console
   console.log(`Swagger docs on http://localhost:${port}/docs`);
 }
 bootstrap();

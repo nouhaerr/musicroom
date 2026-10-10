@@ -7,7 +7,11 @@ JSON, sauf le token de vérification envoyé dans l'URL.
 
 ## Configuration et migration
 
-- `JWT_ACCESS_SECRET` et `JWT_REFRESH_SECRET` : deux secrets distincts.
+- `JWT_ACCESS_SECRET` et `JWT_REFRESH_SECRET` : deux secrets aléatoires distincts,
+  chacun d’au moins 32 octets. Les valeurs absentes, trop courtes, répétées sur un
+  seul caractère, avec espaces ou marqueurs d’exemple sont refusées au démarrage.
+  `make secrets` remplace uniquement ces deux paramètres du `.env` ; recréer le
+  backend ensuite et se reconnecter. Les anciens tokens et liens sont invalidés.
 - `JWT_ACCESS_EXPIRES_IN` / `JWT_REFRESH_EXPIRES_IN` : `15m` / `7d` par défaut.
 - `GOOGLE_AUTH_ENABLED` : `true` par défaut. Un `GOOGLE_CLIENT_ID` vide empêche
   alors le démarrage. Utiliser explicitement `false` en local sans client OAuth :
@@ -44,8 +48,15 @@ marquées acceptées par la migration.
 | `POST /auth/link/google` | `idToken` + access token Music Room dans le header | Lie Google au compte connecté |
 | `POST /auth/link/facebook` | `accessToken` Facebook + access token Music Room dans le header | Lie Facebook au compte connecté |
 
-Google vérifie systématiquement `aud` et `email_verified` ; Facebook vérifie
-`debug_token` (`app_id`, validité, utilisateur), puis le profil. Un email déjà
+Google vérifie signature, émetteur, expiration, `aud` et `email_verified` avec
+`google-auth-library`. `GOOGLE_CLIENT_ID` est le client OAuth **Web**, partagé
+avec le `webClientId` du SDK mobile. Voir le [guide Google Login](GOOGLE-LOGIN.md)
+pour la configuration Android/iOS et le test local dans le navigateur. Facebook vérifie
+`debug_token` (`app_id`, validité, utilisateur), puis le profil. Voir le
+[guide Facebook Login](FACEBOOK-LOGIN.md) pour les permissions, les tests Swagger
+et le fonctionnement en mode développement. Une panne réseau/Meta renvoie 503 ;
+un token ou profil invalide renvoie 401, sans exposer la réponse brute du fournisseur.
+Un email déjà
 présent ne provoque jamais une fusion automatique : la connexion sociale renvoie
 409 et demande de se connecter au compte existant pour effectuer la liaison.
 Les tokens des fournisseurs ne peuvent pas remplacer les JWT Music Room.
@@ -62,9 +73,16 @@ Les liens de réinitialisation expirent après 30 minutes et ne s'utilisent qu'u
 fois. Une réinitialisation invalide aussi les autres liens encore actifs et
 révoque toutes les sessions. La validation d'email expire après 24 heures.
 
-`MailService` affiche toujours les liens dans les logs : le transport SMTP n'est
-pas encore implémenté. Le lien de réinitialisation n'est pas une page web :
-pour tester, copier son token dans le corps de `POST /auth/reset-password`.
+`MailService` envoie les emails avec `MAIL_TRANSPORT=smtp` ; le mode `log` reste
+disponible en développement et est refusé avec `NODE_ENV=production`.
+Voir le [guide SMTP](SMTP.md) pour Gmail et les commandes de diagnostic.
+Le lien de réinitialisation n'a pas encore de page web ou d'écran mobile :
+pour tester, copier son token depuis l'email dans le corps de `POST /auth/reset-password`.
+En cas d'échec SMTP, l'inscription renvoie 503 mais conserve le compte non vérifié :
+utiliser `/auth/resend-verification` après correction de la configuration.
+Le renvoi et le mot de passe oublié gardent une réponse générique même en cas
+d'échec SMTP pour ne pas révéler l'existence du compte ; consulter le code d'erreur
+SMTP dans les logs (sans identifiants, destinataires ni tokens).
 
 ## Amis
 
@@ -168,9 +186,15 @@ ce schéma à la fin. Les services de mail et les réponses des fournisseurs soc
 sont simulés ; les guards JWT, Prisma et PostgreSQL sont réels. Les validations
 des réponses Google/Facebook sont couvertes séparément par les tests unitaires.
 Le limiteur de requêtes est désactivé uniquement dans le processus des tests
-fonctionnels pour permettre la création des comptes nécessaires.
+fonctionnels pour permettre la création des comptes nécessaires. Un scénario le
+réactive pour vérifier le rejet de la onzième tentative de login depuis une même IP.
 
 La suite couvre la rotation/revocation, les resets concurrents, les collisions
 sociales, les demandes d'amitié simultanées, les filtres de profils, les invitations
 et le rattachement/suppression des appareils. Elle ne remplace pas un test réel
 avec les SDK et identifiants Google/Facebook de l'application.
+
+La pagination est aussi vérifiée sur les amis, demandes, invitations, appareils
+et recherches : pages distinctes, ordre stable et bornes invalides.
+Voir le [bilan et la recette restante](AUTH-USERS-STATUS.md) et la
+[note de sécurité](SECURITY-AUTH.md).

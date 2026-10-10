@@ -38,7 +38,7 @@ export class AuthController {
   @Post('resend-verification')
   async resendVerification(@Body() dto: ResendVerificationDto) {
     await this.authService.resendVerification(dto.email);
-    return { message: 'Si ce compte existe, un email a été envoyé' };
+    return { message: 'Si ce compte est éligible, vous recevrez un email. Si rien n’arrive, réessayez plus tard.' };
   }
 
   // LocalAuthGuard déclenche LocalStrategy.validate() -> authService.validateUserCredentials()
@@ -67,7 +67,7 @@ export class AuthController {
   @Post('forgot-password')
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
     await this.authService.forgotPassword(dto.email);
-    return { message: 'Si ce compte existe, un email a été envoyé' };
+    return { message: 'Si ce compte est éligible, vous recevrez un email. Si rien n’arrive, réessayez plus tard.' };
   }
 
   @Post('reset-password')

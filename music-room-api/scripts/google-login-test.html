@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sonora — Test Google Login</title>
+  <style>
+    body { font: 16px/1.6 system-ui, sans-serif; max-width: 760px; margin: 48px auto; padding: 0 20px; color: #17202a; }
+    button { padding: 10px 16px; cursor: pointer; margin: 8px 8px 8px 0; }
+    textarea { width: 100%; box-sizing: border-box; min-height: 130px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f1f4f8; padding: 16px; }
+    details { margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <h1>Tester Google Login</h1>
+  <p>Connecte-toi avec Google, puis teste la connexion à Sonora.</p>
+  <div id="google-button"></div>
+  <p id="status" role="status">Chargement de Google…</p>
+  <button id="test" disabled>Tester la connexion à Sonora</button>
+  <pre id="result" aria-live="polite">Aucun test effectué.</pre>
+  <details>
+    <summary>Obtenir le token pour Swagger</summary>
+    <p>Ce JSON peut être utilisé dans POST /auth/google ou POST /auth/link/google. Garde le token privé.</p>
+    <textarea id="token" readonly aria-label="Corps JSON avec ID token Google"></textarea>
+    <button id="copy" disabled>Copier le JSON</button>
+  </details>
+  <p>Si Sonora répond 409 car ton email existe déjà : connecte-toi avec ton mot de passe dans Swagger,
+    utilise <strong>Authorize</strong> avec ton accessToken Sonora, puis appelle
+    <strong>POST /auth/link/google</strong> avec le JSON ci-dessus. Tu pourras ensuite retester Google Login.</p>
+  <script>
+    let idToken;
+    let apiUrl;
+    const status = document.getElementById('status');
+    const result = document.getElementById('result');
+    const test = document.getElementById('test');
+    async function initializeGoogle() {
+      try {
+        const response = await fetch('/config');
+        const config = await response.json();
+        apiUrl = config.apiUrl.replace(/\/$/, '');
+        google.accounts.id.initialize({
+          client_id: config.clientId,
+          auto_select: false,
+          callback: response => {
+            idToken = response.credential;
+            document.getElementById('token').value = JSON.stringify({ idToken }, null, 2);
+            test.disabled = false;
+            document.getElementById('copy').disabled = false;
+            status.textContent = 'Token Google reçu. Tu peux maintenant tester Sonora.';
+            result.textContent = 'Prêt à tester.';
+          },
+        });
+        google.accounts.id.renderButton(document.getElementById('google-button'), { theme: 'outline', size: 'large' });
+        status.textContent = 'Choisis ton compte Google.';
+      } catch {
+        status.textContent = 'Chargement impossible. Vérifie la connexion et GOOGLE_CLIENT_ID.';
+      }
+    }
+    test.addEventListener('click', async () => {
+      test.disabled = true;
+      try {
+        const response = await fetch(apiUrl + '/auth/google', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken }), signal: AbortSignal.timeout(20000),
+        });
+        const body = await response.json();
+        // API session tokens are deliberately not displayed or persisted.
+        result.textContent = response.ok
+          ? JSON.stringify({ status: response.status, message: 'Connexion réussie', user: { id: body.user?.id, email: body.user?.email } }, null, 2)
+          : JSON.stringify({ status: response.status, message: body.message }, null, 2);
+      } catch {
+        result.textContent = 'API inaccessible ou délai dépassé. Vérifie que le backend est démarré.';
+      } finally { test.disabled = false; }
+    });
+    document.getElementById('copy').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(document.getElementById('token').value);
+        status.textContent = 'JSON copié pour Swagger.';
+      } catch { status.textContent = 'Sélectionne le JSON et copie-le manuellement.'; }
+    });
+  </script>
+  <script src="https://accounts.google.com/gsi/client" async defer onload="initializeGoogle()" onerror="document.getElementById('status').textContent='Le script Google est bloqué ou inaccessible.'"></script>
+</body>
+</html>
