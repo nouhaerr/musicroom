@@ -61,8 +61,9 @@ export class InvitationsService {
       }
       return result;
     });
-    // Declining ends the right to watch the party: tell the realtime gateway, which checks its watchers again
+    // Declining ends the right to watch: tell the realtime gateway, which checks its watchers again
     if (!accept && invitation.partyId) this.realtime.partyChanged(invitation.partyId);
+    if (!accept && invitation.playlistId) this.realtime.playlistChanged(invitation.playlistId);
     return response;
   }
 
@@ -82,8 +83,9 @@ export class InvitationsService {
       }
       return { deleted: true };
     });
-    // The removed user may be watching the party: the realtime gateway checks its watchers again
+    // The removed user may be watching: the realtime gateway checks its watchers again
     if (type === 'PARTY') this.realtime.partyChanged(id);
+    else this.realtime.playlistChanged(id);
     return removed;
   }
 

@@ -8,9 +8,13 @@ import { SubscribeDto } from './dto/subscribe.dto';
 export class RealtimeService {
   private listener?: (target: SubscribeDto) => void;
 
-  // Call it only after the change is committed: the state read next must already contain it
+  // Call these only after the change is committed: the state read next must already contain it
   partyChanged(partyId: string) {
     this.listener?.({ type: 'party', id: partyId });
+  }
+
+  playlistChanged(playlistId: string) {
+    this.listener?.({ type: 'playlist', id: playlistId });
   }
 
   // The gateway registers itself here when it starts

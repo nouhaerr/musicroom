@@ -11,6 +11,7 @@ import { GoogleProvider } from '../src/auth/social/google.provider';
 import { FacebookProvider } from '../src/auth/social/facebook.provider';
 import { RealtimeGateway } from '../src/realtime/realtime.gateway';
 import { PartiesService } from '../src/parties/parties.service';
+import { PlaylistsService } from '../src/playlists/playlists.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { SessionsService } from '../src/auth/sessions.service';
 
@@ -1243,5 +1244,354 @@ describe('Party snapshots: who is still allowed to receive them (edge cases)', (
     await sleep(400);
 
     expect(sessionChecks).not.toHaveBeenCalled();
+  });
+});
+
+// -----------------------------------------------------------------
+// Playlist snapshots
+// -----------------------------------------------------------------
+type PlaylistSnapshot = {
+  playlist: { id: string; name: string };
+  songs: { id: string; songId: string; position: number }[];
+  songsLength: number;
+};
+
+async function playlist(ownerToken: string, options: Record<string, unknown> = {}): Promise<string> {
+  const created = await request('POST', '/playlists', { name: 'Realtime test', ...options }, ownerToken);
+  expect(created.status).toBe(201);
+  return created.body.id;
+}
+
+const addSong = (id: string, token: string, extra: Record<string, unknown> = {}) =>
+  request('POST', `/playlists/${id}/songs`, { externalId: track(), ...extra }, token);
+const moveSong = (id: string, entryId: string, token: string, position: number, expectedPosition: number) =>
+  request('PATCH', `/playlists/${id}/songs/${entryId}`, { position, expectedPosition }, token);
+const removeSong = (id: string, entryId: string, token: string) =>
+  request('DELETE', `/playlists/${id}/songs/${entryId}`, undefined, token);
+
+const watchPlaylist = (socket: Socket, id: string) => send(socket, 'subscribe', { type: 'playlist', id });
+const playlistWatchers = (id: string) => app.get(RealtimeGateway).server.sockets.adapter.rooms.get(`playlist:${id}`)?.size ?? 0;
+
+// Every playlist snapshot a connection receives, in the order they arrive
+function recordPlaylist(socket: Socket): PlaylistSnapshot[] {
+  const received: PlaylistSnapshot[] = [];
+  socket.on('playlist:snapshot', (snapshot: PlaylistSnapshot) => received.push(snapshot));
+  return received;
+}
+
+// A connection watching a playlist, once it has received the snapshot sent on subscribing
+async function playlistWatcher(token: string, id: string) {
+  const socket = await connect({ auth: { token } });
+  const received = recordPlaylist(socket);
+  expect(await watchPlaylist(socket, id)).toEqual({ ok: true });
+  await until(() => received.length === 1);
+  return { socket, received, last: () => received[received.length - 1] };
+}
+
+// What the REST routes show for a playlist right now: a snapshot must hold exactly this
+async function playlistRestView(id: string, token: string) {
+  const playlist = (await request('GET', `/playlists/${id}`, undefined, token)).body;
+  const songs = (await request('GET', `/playlists/${id}/songs?limit=100`, undefined, token)).body;
+  return { playlist, songs };
+}
+const shownPlaylist = ({ playlist, songs }: PlaylistSnapshot) => ({ playlist, songs });
+
+// A private playlist with one song, its owner and a guest who is invited to it
+async function privatePlaylist() {
+  const owner = await account();
+  const guest = await account();
+  const id = await playlist(owner.accessToken, { visibility: 'PRIVATE' });
+  const entry = (await addSong(id, owner.accessToken)).body as { id: string; position: number };
+  const invitation = await request('POST', `/playlists/${id}/invite`, { userId: guest.id }, owner.accessToken);
+  expect(invitation.status).toBe(201);
+  return { owner, guest, id, entry, invitationId: invitation.body.id as string };
+}
+
+describe('Playlist snapshots: who may watch a playlist', () => {
+  it('lets any logged-in user watch a public playlist, and its owner a private one', async () => {
+    const owner = await account();
+    const stranger = await account();
+    const open = await playlist(owner.accessToken);
+    const closed = await playlist(owner.accessToken, { visibility: 'PRIVATE' });
+
+    expect(await watchPlaylist(await connect({ auth: { token: stranger.accessToken } }), open)).toEqual({ ok: true });
+    expect(await watchPlaylist(await connect({ auth: { token: owner.accessToken } }), closed)).toEqual({ ok: true });
+    expect(playlistWatchers(open)).toBe(1);
+    expect(playlistWatchers(closed)).toBe(1);
+  });
+
+  it('refuses a private playlist to someone who is not invited, and accepts them once invited', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await playlist(owner.accessToken, { visibility: 'PRIVATE' });
+    const socket = await connect({ auth: { token: guest.accessToken } });
+
+    expect(await watchPlaylist(socket, id)).toEqual(refusal('FORBIDDEN'));
+    expect(playlistWatchers(id)).toBe(0);
+
+    expect((await request('POST', `/playlists/${id}/invite`, { userId: guest.id }, owner.accessToken)).status).toBe(201);
+    expect(await watchPlaylist(socket, id)).toEqual({ ok: true });
+  });
+
+  it('answers NOT_FOUND for a playlist that does not exist, and for a party id used as a playlist', async () => {
+    const owner = await account();
+    const partyId = await party(owner.accessToken);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+
+    expect(await watchPlaylist(socket, randomUUID())).toEqual(refusal('NOT_FOUND'));
+    expect(await watchPlaylist(socket, partyId)).toEqual(refusal('NOT_FOUND'));
+  });
+
+  it('gives no access to a private playlist through an invitation to another one', async () => {
+    const { guest } = await privatePlaylist();
+    const otherOwner = await account();
+    const other = await playlist(otherOwner.accessToken, { visibility: 'PRIVATE' });
+    const socket = await connect({ auth: { token: guest.accessToken } });
+
+    expect(await watchPlaylist(socket, other)).toEqual(refusal('FORBIDDEN'));
+    expect((await request('GET', `/playlists/${other}`, undefined, guest.accessToken)).status).toBe(403);
+  });
+});
+
+describe('Playlist snapshots: what watchers receive', () => {
+  it('sends the current snapshot on subscribing: the same data as GET /playlists/:id and GET /songs', async () => {
+    const owner = await account();
+    const id = await playlist(owner.accessToken);
+    const last = (await addSong(id, owner.accessToken)).body.id;
+    const first = (await addSong(id, owner.accessToken, { position: 0.5 })).body.id;
+
+    const { received } = await playlistWatcher(owner.accessToken, id);
+
+    expect(shownPlaylist(received[0])).toEqual(await playlistRestView(id, owner.accessToken));
+    expect(received[0].songs.map((entry) => entry.id)).toEqual([first, last]);
+    expect(received[0].songsLength).toBe(2);
+  });
+
+  it('sends every change to everyone watching, with exactly what the REST routes then show', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await playlist(owner.accessToken);
+    const one = await playlistWatcher(owner.accessToken, id);
+    const two = await playlistWatcher(guest.accessToken, id);
+    const bothReceived = async (count: number) => {
+      await until(() => one.received.length === count && two.received.length === count);
+      const view = await playlistRestView(id, owner.accessToken);
+      expect(shownPlaylist(one.last())).toEqual(view);
+      expect(shownPlaylist(two.last())).toEqual(view);
+      return one.last();
+    };
+
+    const a = await addSong(id, guest.accessToken);
+    expect(a.status).toBe(201);
+    expect((await bothReceived(2)).songs.map((entry) => entry.id)).toEqual([a.body.id]);
+
+    const b = await addSong(id, owner.accessToken);
+    expect((await bothReceived(3)).songsLength).toBe(2);
+
+    expect((await moveSong(id, b.body.id, guest.accessToken, 0.5, b.body.position)).status).toBe(200);
+    expect((await bothReceived(4)).songs.map((entry) => entry.id)).toEqual([b.body.id, a.body.id]);
+
+    expect((await removeSong(id, a.body.id, owner.accessToken)).status).toBe(200);
+    const end = await bothReceived(5);
+    expect(end.songs.map((entry) => entry.id)).toEqual([b.body.id]);
+    expect(end.songsLength).toBe(1);
+  });
+
+  it('holds the first 100 songs in order, and the real number of songs', async () => {
+    const owner = await account();
+    const id = await playlist(owner.accessToken);
+    const prisma = app.get(PrismaService);
+    const songs = Array.from({ length: 101 }, (_, i) => ({
+      id: randomUUID(), title: `Bulk ${i}`, artist: 'Test Artist', durationSec: 200, sourceUri: 'https://www.deezer.com',
+    }));
+    await prisma.song.createMany({ data: songs });
+    // Many songs share a position: the order falls back to the id
+    await prisma.playlistSong.createMany({ data: songs.map((song, i) => ({ songId: song.id, playlistId: id, position: i % 4, addedById: owner.id })) });
+
+    const { received } = await playlistWatcher(owner.accessToken, id);
+
+    expect(received[0].songs).toHaveLength(100);
+    expect(received[0].songsLength).toBe(101);
+    expect(received[0].songs).toEqual((await playlistRestView(id, owner.accessToken)).songs);
+  });
+
+  it('sends nothing for a refused request', async () => {
+    const owner = await account();
+    const visitor = await account();
+    const id = await playlist(owner.accessToken, { editLicense: 'INVITED_ONLY' });
+    const externalId = track();
+    const entry = (await request('POST', `/playlists/${id}/songs`, { externalId }, owner.accessToken)).body;
+    const { received } = await playlistWatcher(owner.accessToken, id);
+    expect((await moveSong(id, entry.id, owner.accessToken, 5, entry.position)).status).toBe(200);
+    await until(() => received.length === 2);
+
+    expect((await request('POST', `/playlists/${id}/songs`, { externalId }, owner.accessToken)).status).toBe(409);
+    expect((await moveSong(id, entry.id, owner.accessToken, 9, entry.position)).status).toBe(409);
+    expect((await moveSong(id, randomUUID(), owner.accessToken, 9, 1)).status).toBe(404);
+    expect((await removeSong(id, randomUUID(), owner.accessToken)).status).toBe(404);
+    expect((await addSong(id, visitor.accessToken)).status).toBe(403);
+    expect((await removeSong(id, entry.id, visitor.accessToken)).status).toBe(403);
+    await sleep(500);
+
+    expect(received).toHaveLength(2);
+  });
+
+  it('ends on the true state after several simultaneous moves of the same song', async () => {
+    const owner = await account();
+    const id = await playlist(owner.accessToken);
+    const entry = (await addSong(id, owner.accessToken)).body;
+    const { received, last } = await playlistWatcher(owner.accessToken, id);
+
+    const answers = await Promise.all([10, 20, 30, 40].map((position) => moveSong(id, entry.id, owner.accessToken, position, entry.position)));
+    const winner = answers.find((answer) => answer.status === 200)!;
+    await until(() => received.length >= 2);
+    await sleep(500);
+
+    expect(answers.filter((answer) => answer.status === 200)).toHaveLength(1);
+    expect(last().songs).toMatchObject([{ id: entry.id, position: winner.body.position }]);
+    expect(shownPlaylist(last())).toEqual(await playlistRestView(id, owner.accessToken));
+  });
+
+  it('reads a snapshot as one consistent state, even when a change commits in the middle of the reads', async () => {
+    const owner = await account();
+    const id = await playlist(owner.accessToken);
+    const kept = (await addSong(id, owner.accessToken)).body.id;
+    const removed = (await addSong(id, owner.accessToken)).body.id;
+    // Pause the snapshot of the subscription below right after it has read the playlist, and
+    // remove a song at that moment
+    const prisma = app.get(PrismaService);
+    const transaction = prisma.$transaction.bind(prisma) as (...args: unknown[]) => Promise<unknown>;
+    let changed = false;
+    const pauseAfterPlaylistRead = (tx: any) => new Proxy(tx, {
+      get: (client, model) => model !== 'playlist' ? client[model] : new Proxy(client.playlist, {
+        get: (delegate, method) => method !== 'findUniqueOrThrow' ? delegate[method] : async (args: { where: { id: string } }) => {
+          const found = await delegate.findUniqueOrThrow(args);
+          if (!changed && args.where.id === id) {
+            changed = true;
+            expect((await removeSong(id, removed, owner.accessToken)).status).toBe(200);
+          }
+          return found;
+        },
+      }),
+    });
+    spies.push(jest.spyOn(prisma, '$transaction').mockImplementation(((work: unknown, options?: unknown) =>
+      typeof work === 'function' ? transaction((tx: unknown) => work(pauseAfterPlaylistRead(tx)), options) : transaction(work, options)
+    ) as never));
+
+    const { received } = await playlistWatcher(owner.accessToken, id);
+    await until(() => received.length === 2);
+
+    // Entirely before the removal, then entirely after it: never a list and a length that disagree
+    expect(changed).toBe(true);
+    expect(received[0].songs.map((entry) => entry.id)).toEqual([kept, removed]);
+    expect(received[0].songsLength).toBe(2);
+    expect(received[1].songs.map((entry) => entry.id)).toEqual([kept]);
+    expect(received[1].songsLength).toBe(1);
+  });
+
+  it('does not read a playlist that nobody watches', async () => {
+    const owner = await account();
+    const id = await playlist(owner.accessToken);
+    const reads = jest.spyOn(app.get(PlaylistsService), 'snapshot');
+    spies.push(reads);
+
+    expect((await addSong(id, owner.accessToken)).status).toBe(201);
+    await sleep(400);
+
+    expect(reads.mock.calls.filter(([playlistId]) => playlistId === id)).toHaveLength(0);
+  });
+});
+
+describe('Playlist snapshots: who is still allowed to receive them', () => {
+  it('removes a guest from the room as soon as the invitation is revoked', async () => {
+    const { owner, guest, id } = await privatePlaylist();
+    const host = await playlistWatcher(owner.accessToken, id);
+    const invited = await playlistWatcher(guest.accessToken, id);
+    const notices = recordNotices(invited.socket);
+
+    expect((await request('DELETE', `/playlists/${id}/invitations/${guest.id}`, undefined, owner.accessToken)).status).toBe(200);
+    await until(() => notices.length === 1);
+
+    expect(notices).toEqual([['unsubscribed', { type: 'playlist', id, code: 'FORBIDDEN' }]]);
+    expect(invited.socket.connected).toBe(true);
+    expect(playlistWatchers(id)).toBe(1);
+
+    const seenByHost = host.received.length;
+    expect((await addSong(id, owner.accessToken)).status).toBe(201);
+    await until(() => host.received.length === seenByHost + 1);
+    await sleep(300);
+    expect(invited.received).toHaveLength(1);
+  });
+
+  it('removes a guest who declines the invitation while watching, and sends nothing when they accept', async () => {
+    const declining = await privatePlaylist();
+    const invited = await playlistWatcher(declining.guest.accessToken, declining.id);
+    const notices = recordNotices(invited.socket);
+    expect((await request('POST', `/invitations/${declining.invitationId}/decline`, {}, declining.guest.accessToken)).status).toBe(201);
+    await until(() => notices.length === 1);
+    expect(notices).toEqual([['unsubscribed', { type: 'playlist', id: declining.id, code: 'FORBIDDEN' }]]);
+
+    const accepting = await privatePlaylist();
+    const host = await playlistWatcher(accepting.owner.accessToken, accepting.id);
+    const staying = await playlistWatcher(accepting.guest.accessToken, accepting.id);
+    const stayingNotices = recordNotices(staying.socket);
+    expect((await request('POST', `/invitations/${accepting.invitationId}/accept`, {}, accepting.guest.accessToken)).status).toBe(201);
+    await sleep(500);
+    expect(host.received).toHaveLength(1);
+    expect(staying.received).toHaveLength(1);
+    expect(stayingNotices).toEqual([]);
+  });
+
+  it('closes a connection whose session was logged out, at the next playlist snapshot', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await playlist(owner.accessToken);
+    const staying = await playlistWatcher(owner.accessToken, id);
+    const leaving = await playlistWatcher(guest.accessToken, id);
+    const notices = recordNotices(leaving.socket);
+    expect((await request('POST', '/auth/logout', {}, guest.accessToken)).status).toBe(201);
+
+    expect((await addSong(id, owner.accessToken)).status).toBe(201);
+    await until(() => staying.received.length === 2 && notices.length === 1);
+
+    expect(notices).toEqual([['session:expired']]);
+    expect(leaving.received).toHaveLength(1);
+    expect(playlistWatchers(id)).toBe(1);
+  });
+});
+
+describe('Parties and playlists on the same connection', () => {
+  it('keeps the two kinds apart: each change reaches the watchers of that party or playlist only', async () => {
+    const owner = await account();
+    const { id: partyId, entries } = await partyWithSongs(owner.accessToken, 1);
+    const playlistId = await playlist(owner.accessToken);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+    const parties = record(socket);
+    const playlists = recordPlaylist(socket);
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+    expect(await watchPlaylist(socket, playlistId)).toEqual({ ok: true });
+    await until(() => parties.length === 1 && playlists.length === 1);
+
+    expect((await addSong(playlistId, owner.accessToken)).status).toBe(201);
+    await until(() => playlists.length === 2);
+    await sleep(300);
+    expect(parties).toHaveLength(1);
+
+    expect((await vote(partyId, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => parties.length === 2);
+    await sleep(300);
+    expect(playlists).toHaveLength(2);
+  });
+
+  it('counts parties and playlists together in the limit of 20 subscriptions', async () => {
+    const owner = await account();
+    const socket = await connect({ auth: { token: owner.accessToken } });
+    for (let i = 0; i < 10; i++) {
+      expect(await watch(socket, await party(owner.accessToken))).toEqual({ ok: true });
+      expect(await watchPlaylist(socket, await playlist(owner.accessToken))).toEqual({ ok: true });
+    }
+
+    expect(await watchPlaylist(socket, await playlist(owner.accessToken))).toEqual(refusal('TOO_MANY'));
+    expect(await watch(socket, await party(owner.accessToken))).toEqual(refusal('TOO_MANY'));
   });
 });

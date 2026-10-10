@@ -11,6 +11,14 @@ import { SongsService } from '../songs/songs.service';
 import { EditLicense, Playlist, Prisma, ResourceType, Visibility } from '../../generated/prisma';
 import { CreatePlaylistDto } from './dto/create-playlist.dto';
 import { AddSongToPlaylistDto, MoveSongDto } from './dto/playlist-actions.dto';
+import { RealtimeService } from '../realtime/realtime.service';
+
+// Order of the songs of a playlist: by position, then the id so that two reads always agree.
+// Shared by GET /songs and the realtime snapshot, so they never differ.
+const SONG_ORDER: Prisma.PlaylistSongOrderByWithRelationInput[] = [{ position: 'asc' }, { id: 'asc' }];
+// What each song of a playlist comes with, in GET /songs and in the realtime snapshot
+const SONG_ENTRY = { song: true, addedBy: { select: { id: true, name: true } } } satisfies Prisma.PlaylistSongInclude;
+const SNAPSHOT_SONGS_SIZE = 100; // a realtime snapshot holds as many songs as GET /songs' largest page
 
 @Injectable()
 export class PlaylistsService {
@@ -18,6 +26,7 @@ export class PlaylistsService {
     private readonly prisma: PrismaService,
     private readonly invitations: InvitationsService,
     private readonly songsService: SongsService,
+    private readonly realtime: RealtimeService,
   ) {}
 
   create(ownerId: string, dto: CreatePlaylistDto) {
@@ -66,6 +75,20 @@ export class PlaylistsService {
     return playlist;
   }
 
+  // Everything a client shows for a playlist (the same data as GET /playlists/:id and GET /songs),
+  // read as one consistent state. The realtime gateway sends it to everyone watching the playlist.
+  snapshot(playlistId: string) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const playlist = await tx.playlist.findUniqueOrThrow({ where: { id: playlistId } });
+        const songs = await tx.playlistSong.findMany({ where: { playlistId }, include: SONG_ENTRY, orderBy: SONG_ORDER, take: SNAPSHOT_SONGS_SIZE });
+        const songsLength = await tx.playlistSong.count({ where: { playlistId } });
+        return { playlist, songs, songsLength };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
+
   // Une invitation rend la playlist visible ; son acceptation ajoute le collaborateur.
   invite(playlistId: string, inviterId: string, invitedUserId: string) {
     return this.invitations.invite(ResourceType.PLAYLIST, playlistId, inviterId, invitedUserId);
@@ -84,8 +107,8 @@ export class PlaylistsService {
 
     return this.prisma.playlistSong.findMany({
       where: { playlistId },
-      include: { song: true, addedBy: { select: { id: true, name: true } } },
-      orderBy: [{ position: 'asc' }, { id: 'asc' }], ...paginate(query),
+      include: SONG_ENTRY,
+      orderBy: SONG_ORDER, ...paginate(query),
     });
   }
 
@@ -96,13 +119,15 @@ export class PlaylistsService {
     const song = await this.songsService.findOrCreateByExternalId(dto.externalId);
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const added = await this.prisma.$transaction(async (tx) => {
         const position = dto.position ?? (await this.nextPosition(tx, playlistId));
         return tx.playlistSong.create({
           data: { playlistId, songId: song.id, position, addedById: userId },
           include: { song: true },
         });
       });
+      this.realtime.playlistChanged(playlistId);
+      return added;
     } catch (e: unknown) {
       if (this.isUniqueConstraintError(e)) {
         throw new ConflictException('Ce morceau est déjà dans la playlist');
@@ -119,7 +144,7 @@ export class PlaylistsService {
     const playlist = await this.findByIdOrThrow(playlistId);
     await this.assertCanEdit(playlist, userId);
 
-    return this.prisma.$transaction(async (tx) => {
+    const moved = await this.prisma.$transaction(async (tx) => {
       // The position the client saw is checked by the same statement that moves the song: of
       // several simultaneous moves of one song, the database lets exactly one find it there
       const { count } = await tx.playlistSong.updateMany({
@@ -137,6 +162,8 @@ export class PlaylistsService {
       }
       return current;
     });
+    this.realtime.playlistChanged(playlistId);
+    return moved;
   }
 
   async removeSong(playlistId: string, playlistSongId: string, userId: string) {
@@ -146,6 +173,7 @@ export class PlaylistsService {
     // One statement: of several simultaneous removals, one deletes the song and the others find nothing
     const { count } = await this.prisma.playlistSong.deleteMany({ where: { id: playlistSongId, playlistId } });
     if (count === 0) throw new NotFoundException('Morceau introuvable dans cette playlist');
+    this.realtime.playlistChanged(playlistId);
     return { deleted: true };
   }
 
@@ -153,12 +181,25 @@ export class PlaylistsService {
   // Autorisations
   // -----------------------------------------------------------------
   private async assertCanView(playlist: Playlist, userId: string): Promise<void> {
-    if (playlist.visibility === Visibility.PUBLIC) return;
-    if (playlist.ownerId === userId) return;
-    if (await this.prisma.invitation.findFirst({
-      where: { playlistId: playlist.id, invitedUserId: userId, ...activeInvitation },
-    })) return;
+    if ((await this.viewers(playlist, [userId])).has(userId)) return;
     throw new ForbiddenException('Cette playlist est privée');
+  }
+
+  // Which of these users may see the playlist: everyone if it is public, otherwise its owner and
+  // the users with a pending or accepted invitation. The single place where this rule is written:
+  // GET /playlists/:id uses it for one user, the realtime gateway for everyone about to receive a snapshot.
+  async viewers(playlist: Pick<Playlist, 'id' | 'ownerId' | 'visibility'>, userIds: string[]): Promise<Set<string>> {
+    if (playlist.visibility === Visibility.PUBLIC) return new Set(userIds);
+    const allowed = new Set(userIds.filter((id) => id === playlist.ownerId));
+    const others = userIds.filter((id) => id !== playlist.ownerId);
+    if (others.length > 0) {
+      const invitations = await this.prisma.invitation.findMany({
+        where: { playlistId: playlist.id, invitedUserId: { in: others }, ...activeInvitation },
+        select: { invitedUserId: true },
+      });
+      for (const { invitedUserId } of invitations) allowed.add(invitedUserId);
+    }
+    return allowed;
   }
 
   private async assertCanEdit(playlist: Playlist, userId: string): Promise<void> {

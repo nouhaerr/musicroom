@@ -13,17 +13,18 @@ import { validateSync } from 'class-validator';
 import { Server, Socket } from 'socket.io';
 import { SessionsService } from '../auth/sessions.service';
 import { PartiesService } from '../parties/parties.service';
+import { PlaylistsService } from '../playlists/playlists.service';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { RealtimeService } from './realtime.service';
 
 const MAX_MESSAGE_BYTES = 16 * 1024; // clients only ever send small messages
 const MAX_TIMER_MS = 2 ** 31 - 1; // the longest delay setTimeout accepts
-const MAX_SUBSCRIPTIONS = 20; // how many parties one connection may watch at the same time
+const MAX_SUBSCRIPTIONS = 20; // how many parties and playlists one connection may watch at the same time
 const SNAPSHOT_INTERVAL_MS = 200; // at most 5 snapshots per second per room: changes in between are merged
 const RETRY_DELAY_MS = 1000; // after a failed read (e.g. database busy), try again this much later
 
-// What the access rule of a party needs to know about it
-type PartyAccess = Parameters<PartiesService['viewers']>[0];
+// The full state of a party or of a playlist, as sent to its watchers
+type Snapshot = Awaited<ReturnType<PartiesService['snapshot']>> | Awaited<ReturnType<PlaylistsService['snapshot']>>;
 
 // What is waiting to be sent to one room
 interface Pending {
@@ -48,6 +49,7 @@ export type Ack =
 type AckErrorCode = 'BAD_REQUEST' | 'UNAUTHORIZED' | 'FORBIDDEN' | 'NOT_FOUND' | 'TOO_MANY' | 'INTERNAL';
 
 const refuse = (code: AckErrorCode, message: string): Ack => ({ ok: false, error: { code, message } });
+const EXPECTED_PAYLOAD = 'Expected { type: "party" | "playlist", id: "<uuid>" }';
 
 // The Socket.io room that gathers everyone watching one resource
 export const roomOf = (target: SubscribeDto) => `${target.type}:${target.id}`;
@@ -65,6 +67,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
   constructor(
     private readonly sessions: SessionsService,
     private readonly parties: PartiesService,
+    private readonly playlists: PlaylistsService,
     private readonly realtime: RealtimeService,
   ) {}
 
@@ -106,7 +109,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
   @SubscribeMessage('subscribe')
   async subscribe(@ConnectedSocket() socket: AuthedSocket, @MessageBody() payload: unknown): Promise<Ack> {
     const target = parse(payload);
-    if (!target) return refuse('BAD_REQUEST', 'Expected { type: "party", id: "<uuid>" }');
+    if (!target) return refuse('BAD_REQUEST', EXPECTED_PAYLOAD);
     if (!(await this.stillLoggedIn(socket))) return refuse('UNAUTHORIZED', 'Session expired or revoked');
 
     try {
@@ -129,19 +132,25 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
   @SubscribeMessage('unsubscribe')
   async unsubscribe(@ConnectedSocket() socket: AuthedSocket, @MessageBody() payload: unknown): Promise<Ack> {
     const target = parse(payload);
-    if (!target) return refuse('BAD_REQUEST', 'Expected { type: "party", id: "<uuid>" }');
+    if (!target) return refuse('BAD_REQUEST', EXPECTED_PAYLOAD);
     await socket.leave(roomOf(target));
     return { ok: true };
   }
 
   // The same rule as the REST route: whoever may GET the resource may watch it
   private async assertCanView(target: SubscribeDto, userId: string): Promise<void> {
-    await this.parties.getDetail(target.id, userId);
+    if (target.type === 'party') await this.parties.getDetail(target.id, userId);
+    else await this.playlists.getDetail(target.id, userId);
   }
 
   // Takes a snapshot: the full state of what a room watches, as it is in the database right now
-  private takeSnapshot(target: SubscribeDto) {
-    return this.parties.snapshot(target.id);
+  private takeSnapshot(target: SubscribeDto): Promise<Snapshot> {
+    return target.type === 'party' ? this.parties.snapshot(target.id) : this.playlists.snapshot(target.id);
+  }
+
+  // Which of these users may still see what the snapshot shows (it holds the party or the playlist itself)
+  private viewers(snapshot: Snapshot, userIds: string[]): Promise<Set<string>> {
+    return 'party' in snapshot ? this.parties.viewers(snapshot.party, userIds) : this.playlists.viewers(snapshot.playlist, userIds);
   }
 
   // The connections currently in a room: all of them, or only those among `ids`
@@ -154,11 +163,11 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
   // A logout or a revoked invitation must also take effect on a connection that is already
   // subscribed: right before a snapshot goes out, everyone about to receive it is checked again,
   // with two queries whatever their number. Whoever fails is out of the room before the send.
-  private async removeUnauthorized(target: SubscribeDto, party: PartyAccess, sockets: AuthedSocket[]) {
+  private async removeUnauthorized(target: SubscribeDto, snapshot: Snapshot, sockets: AuthedSocket[]) {
     if (sockets.length === 0) return;
     const [loggedIn, viewers] = await Promise.all([
       this.sessions.validSessionIds(sockets.map((socket) => socket.data.sessionId)),
-      this.parties.viewers(party, sockets.map((socket) => socket.data.userId)),
+      this.viewers(snapshot, sockets.map((socket) => socket.data.userId)),
     ]);
     for (const socket of sockets) {
       if (!loggedIn.has(socket.data.sessionId)) {
@@ -203,7 +212,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
         // The snapshot is read first, the receivers are checked after: whoever lost access
         // before this state existed is found out here and never sees it
         const receivers = this.socketsIn(room, everyone ? undefined : newcomers);
-        await this.removeUnauthorized(pending.target, snapshot.party, receivers);
+        await this.removeUnauthorized(pending.target, snapshot, receivers);
         if (everyone) {
           this.server.to(room).emit(event, snapshot);
         } else {
