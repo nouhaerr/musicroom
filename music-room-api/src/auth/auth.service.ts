@@ -6,10 +6,11 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
+import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { UsersService } from '../users/users.service';
 import { MailService } from '../mail/mail.service';
@@ -65,7 +66,12 @@ export class AuthService {
     const user = await this.usersService.findByEmail(email);
     // On ne révèle jamais si l'email existe ou non (anti-énumération de comptes)
     if (user && !user.emailVerifiedAt) {
-      await this.sendVerificationEmail(user);
+      try {
+        await this.sendVerificationEmail(user);
+      } catch (error) {
+        // Une panne SMTP ne doit pas révéler quels comptes existent.
+        if (!(error instanceof ServiceUnavailableException)) throw error;
+      }
     }
   }
 
@@ -120,7 +126,11 @@ export class AuthService {
       await this.prisma.passwordResetToken.create({ data: {
         userId: user.id, tokenHash: tokenHash(token), expiresAt: new Date(exp * 1000),
       } });
-      await this.mailService.sendPasswordResetEmail(user.email, token);
+      try {
+        await this.mailService.sendPasswordResetEmail(user.email, token);
+      } catch (error) {
+        if (!(error instanceof ServiceUnavailableException)) throw error;
+      }
     }
     // Réponse générique quoi qu'il arrive côté contrôleur (anti-énumération)
   }
@@ -211,23 +221,23 @@ export class AuthService {
   // ---------------------------------------------------------------------
   // Helpers JWT
   // ---------------------------------------------------------------------
-  private signPurposeToken(user: User, type: TokenType, expiresIn: string): string {
+  private signPurposeToken(user: User, type: TokenType, expiresIn: JwtSignOptions['expiresIn']): string {
     const secret =
       type === 'refresh'
-        ? this.config.get<string>('JWT_REFRESH_SECRET', 'dev_refresh_secret')
-        : this.config.get<string>('JWT_ACCESS_SECRET', 'dev_access_secret');
+        ? this.config.getOrThrow<string>('JWT_REFRESH_SECRET')
+        : this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
     return this.signToken({ sub: user.id, email: user.email, type, jti: randomUUID() }, secret, expiresIn);
   }
 
-  private signToken(payload: JwtPayload, secret: string, expiresIn: string): string {
+  private signToken(payload: JwtPayload, secret: string, expiresIn: JwtSignOptions['expiresIn']): string {
     return this.jwtService.sign(payload, { secret, expiresIn });
   }
 
   private verifyPurposeToken(token: string, expectedType: TokenType): JwtPayload {
     const secret =
       expectedType === 'refresh'
-        ? this.config.get<string>('JWT_REFRESH_SECRET', 'dev_refresh_secret')
-        : this.config.get<string>('JWT_ACCESS_SECRET', 'dev_access_secret');
+        ? this.config.getOrThrow<string>('JWT_REFRESH_SECRET')
+        : this.config.getOrThrow<string>('JWT_ACCESS_SECRET');
 
     let payload: JwtPayload;
     try {

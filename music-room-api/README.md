@@ -8,18 +8,29 @@ logs d'action, et les deux services **Music Track Vote** (`parties`) et
 
 ```bash
 cd music-room-api               # depuis la racine du dépôt
-cp .env.example .env            # première installation uniquement
-# Configurer .env (voir ci-dessous), puis démarrer Docker Desktop / Docker Engine.
+# Démarrer Docker Desktop / Docker Engine.
 make                           # construit, applique les migrations, démarre l'API
 make logs                      # suit les logs du backend
 ```
 
 Documentation Swagger générée automatiquement : http://localhost:3000/docs
 
+Sur Windows, utiliser Docker Desktop avec les conteneurs Linux et installer
+`make` pour le shell choisi (Git Bash ou PowerShell). La génération des secrets
+omet le mapping UID/GID sous Windows. Sur Linux/macOS, elle utilise l’utilisateur
+hôte ; le `.env` neuf reste en `0600`. Compose injecte les variables sans imposer
+que l’utilisateur du backend puisse relire ce fichier. Voir [la note de sécurité](docs/SECURITY-AUTH.md).
+
+PostgreSQL est publié uniquement sur `127.0.0.1:5432`. Remplacer le mot de passe
+de développement du modèle avant tout déploiement. Les migrations Prisma assurent
+l’initialisation du schéma ; aucun dossier `docker/postgres-init` n’est requis.
+
 ## Configuration
 
-Éditez `.env` (également créé automatiquement par `make` s’il est absent, à partir de
-`.env.example`) :
+Éditez `.env` (créé automatiquement par `make` s’il est absent, à partir de
+`.env.example`, avec deux secrets JWT aléatoires). Pour préparer la configuration
+avant le premier démarrage, lancer `make .env`, puis éditer `.env` et lancer `make`.
+Un fichier `.env` existant n’est jamais remplacé par `make` :
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` : configuration PostgreSQL.
 - `DATABASE_URL` : URL Prisma, avec l'hôte `postgres` depuis Docker. Les identifiants
   de l'URL doivent être encodés si le mot de passe contient des caractères réservés.
@@ -27,11 +38,17 @@ Documentation Swagger générée automatiquement : http://localhost:3000/docs
   conserver le mot de passe brut dans `POSTGRES_PASSWORD`.
 - Un volume PostgreSQL existant conserve ses identifiants : changer `.env` ne
   change pas le mot de passe déjà enregistré en base.
-- `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` : à changer avant tout déploiement
+- `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` : obligatoires, distincts, au moins
+  32 octets chacun, sans espaces ni valeurs d’exemple. L’API refuse de démarrer
+  si ces contrôles échouent, y compris en développement. `make secrets` génère
+  deux valeurs aléatoires sans les afficher, en conservant les autres paramètres.
+  Recréer ensuite le backend ; tous les anciens JWT et liens de vérification/reset
+  deviennent invalides. Voir [la configuration JWT](docs/SECURITY-AUTH.md#configuration-des-secrets-jwt).
 - `FACEBOOK_CLIENT_ID` / `FACEBOOK_CLIENT_SECRET` : depuis
   https://developers.facebook.com/apps
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` : depuis
-  https://console.cloud.google.com/apis/credentials
+- `GOOGLE_CLIENT_ID` : client OAuth **Application Web** depuis Google Cloud,
+  identique au `webClientId` du SDK mobile. Aucun secret Google requis pour ce flux.
+  Configuration et test navigateur : [guide Google Login](docs/GOOGLE-LOGIN.md).
 
 Sans client OAuth Google en développement, ajouter `GOOGLE_AUTH_ENABLED=false`
 dans `.env`. Les routes de connexion et de liaison Google renvoient alors 503 ;
@@ -39,11 +56,32 @@ l'authentification par email reste disponible. Par défaut, Google est activé e
 l'absence de `GOOGLE_CLIENT_ID` empêche le démarrage. Après modification de `.env`,
 recréer le backend avec `docker compose up -d --no-deps --force-recreate backend`.
 
-Le service mail affiche actuellement les liens dans les logs. Renseigner
-`MAIL_HOST` ne suffit pas : un vrai transport SMTP reste à implémenter.
+Le service mail utilise `MAIL_TRANSPORT=log` en développement (liens dans les logs)
+ou `MAIL_TRANSPORT=smtp` pour envoyer de vrais emails. Configuration Gmail,
+vérification et premier envoi : [guide SMTP](docs/SMTP.md).
 
 Routes, comportement de sécurité, pagination, migrations et tests A1–A5 :
 [guide authentification et utilisateurs](docs/AUTH-USERS.md).
+Tests Facebook et permissions : [guide Facebook Login](docs/FACEBOOK-LOGIN.md).
+État de la partie auth/social et recette restante : [bilan](docs/AUTH-USERS-STATUS.md).
+Protections et limites de déploiement : [note de sécurité](docs/SECURITY-AUTH.md).
+
+## Vérification automatique
+
+```sh
+make lint                      # contrôle sans modifier les fichiers
+make typecheck                 # vérification TypeScript
+make test                      # tests unitaires
+docker compose exec backend npm run build
+docker compose exec backend npm run security:audit
+docker compose exec backend sh -c 'TEST_DATABASE_URL="$DATABASE_URL" npm run test:e2e'
+```
+
+Le workflow [Backend CI](../.github/workflows/backend-ci.yml) exécute installation,
+audit des dépendances de production, génération Prisma, lint, TypeScript, tests unitaires, compilation et tests d’intégration
+sur les push vers `main` et les pull requests. Il utilise PostgreSQL jetable et les fournisseurs
+sociaux simulés, sans secrets SMTP/OAuth. Le premier résultat GitHub sera disponible
+après le push du workflow. Détails : [CI.md](docs/CI.md).
 
 `make down` arrête les services en conservant les données. `make fclean` et
 `make re` suppriment les volumes et les données PostgreSQL. Pour créer une

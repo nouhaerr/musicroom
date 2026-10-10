@@ -6,7 +6,13 @@ import { SessionsService, tokenHash } from './sessions.service';
 const user = { id: 'user-id', email: 'user@example.com', passwordHash: 'secret-hash', updatedAt: new Date() };
 const testSettings: Record<string, string> = { JWT_ACCESS_SECRET: 'access-test', JWT_REFRESH_SECRET: 'refresh-test' };
 // Keep JWT tests independent from environment variables loaded by Prisma.
-const config = { get: (key: string, fallback?: unknown) => testSettings[key] ?? fallback } as unknown as ConfigService;
+const config = {
+  get: (key: string, fallback?: unknown) => testSettings[key] ?? fallback,
+  getOrThrow: (key: string) => {
+    if (!testSettings[key]) throw new Error(`Missing setting: ${key}`);
+    return testSettings[key];
+  },
+} as unknown as ConfigService;
 const jwt = new JwtService();
 
 function fixture() {

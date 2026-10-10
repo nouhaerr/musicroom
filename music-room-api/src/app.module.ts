@@ -12,11 +12,16 @@ import { DevicesModule } from './devices/devices.module';
 import { LoggingModule } from './common/logging/logging.module';
 import { PartiesModule } from './parties/parties.module';
 import { PlaylistsModule } from './playlists/playlists.module';
+import { validateEnvironment } from './config/environment';
 import { SongsModule } from './songs/songs.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      ignoreEnvFile: process.env.CONFIG_IGNORE_ENV_FILE === 'true',
+      validate: validateEnvironment,
+    }),
     // Limite par défaut appliquée à toutes les routes : 60 requêtes / minute
     // par IP. Des limites plus strictes sont posées via @Throttle() sur les
     // routes sensibles (login, register...).
