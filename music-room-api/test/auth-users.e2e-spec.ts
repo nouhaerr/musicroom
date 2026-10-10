@@ -29,7 +29,8 @@ async function request(method: string, path: string, body?: unknown, token?: str
     method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  const contentType = response.headers.get('content-type') ?? '';
+  return { status: response.status, body: contentType.includes('application/json') ? await response.json() : await response.text() };
 }
 
 async function account(name = 'Listener') {
