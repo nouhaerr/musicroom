@@ -21,7 +21,8 @@ omet le mapping UID/GID sous Windows. Sur Linux/macOS, elle utilise l’utilisat
 hôte ; le `.env` neuf reste en `0600`. Compose injecte les variables sans imposer
 que l’utilisateur du backend puisse relire ce fichier. Voir [la note de sécurité](docs/SECURITY-AUTH.md).
 
-PostgreSQL est publié uniquement sur `127.0.0.1:5432`. Remplacer le mot de passe
+PostgreSQL est publié uniquement sur `127.0.0.1:5433` (le backend utilise toujours
+`postgres:5432` sur le réseau Docker). Remplacer le mot de passe
 de développement du modèle avant tout déploiement. Les migrations Prisma assurent
 l’initialisation du schéma ; aucun dossier `docker/postgres-init` n’est requis.
 
@@ -36,6 +37,8 @@ Un fichier `.env` existant n’est jamais remplacé par `make` :
   de l'URL doivent être encodés si le mot de passe contient des caractères réservés.
   Dans ce cas, remplacer l'interpolation du modèle par l'URL correctement encodée ;
   conserver le mot de passe brut dans `POSTGRES_PASSWORD`.
+- `MOBILE_DEEP_LINK` : schéma ouvert par les liens de validation email et de reset
+  de mot de passe, par défaut `sonora://auth`.
 - Un volume PostgreSQL existant conserve ses identifiants : changer `.env` ne
   change pas le mot de passe déjà enregistré en base.
 - `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` : obligatoires, distincts, au moins

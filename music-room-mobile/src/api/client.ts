@@ -1,3 +1,6 @@
+import type { OwnProfile, ProfileDraft } from './profiles.ts';
+import { profileChanges } from './profiles.ts';
+
 export interface User {
   id: string;
   name: string;
@@ -201,15 +204,39 @@ export class ApiClient {
   }
 
   async login(email: string, password: string) {
+    await this.authenticate('/auth/login', async () => ({ email: email.trim(), password }));
+  }
+
+  async loginWithGoogle(acquireToken: () => Promise<string | null>): Promise<boolean> {
+    return this.authenticate('/auth/google', async () => {
+      const idToken = await acquireToken();
+      return idToken ? { idToken } : null;
+    });
+  }
+
+  async linkGoogle(acquireToken: () => Promise<string | null>): Promise<boolean> {
+    const generation = this.generation;
+    if (!this.session) throw new ApiError(401, 'Connectez-vous avant de lier Google.');
+    const idToken = await acquireToken();
+    if (!idToken) return false;
+    if (generation !== this.generation) throw new ApiError(401, 'Session fermée.');
+    await this.syncProfile('/auth/link/google', 'POST', { idToken });
+    return true;
+  }
+
+  private async authenticate(path: string, acquireBody: () => Promise<Record<string, string> | null>): Promise<boolean> {
     const generation = ++this.generation;
     this.deviceId = null;
-    const session = sessionFrom(await this.transport('/auth/login', 'POST', { email: email.trim(), password }));
-    if (generation !== this.generation) return;
+    const body = await acquireBody();
+    if (!body || generation !== this.generation) return false;
+    const session = sessionFrom(await this.transport(path, 'POST', body));
+    if (generation !== this.generation) return false;
     try { await this.persist(session.refreshToken, generation); }
     catch { await this.clearSession(); throw new Error('Impossible de sauvegarder la session dans le stockage sécurisé.'); }
-    if (generation !== this.generation) return;
+    if (generation !== this.generation) return false;
     this.session = session;
     this.notify();
+    return true;
   }
 
   async logout() {
@@ -223,6 +250,28 @@ export class ApiClient {
     catch {
       throw new Error('Déconnexion locale effectuée. Le serveur n’a pas confirmé la révocation de la session.');
     }
+  }
+
+  async getMyProfile(): Promise<OwnProfile> {
+    return this.syncProfile('/users/me', 'GET');
+  }
+
+  async updateMyProfile(original: OwnProfile, draft: ProfileDraft): Promise<OwnProfile> {
+    return this.syncProfile('/users/me', 'PATCH', profileChanges(original, draft));
+  }
+
+  private async syncProfile(path: string, method: string, body?: unknown): Promise<OwnProfile> {
+    const generation = this.generation;
+    const profile = await this.request<OwnProfile>(path, method, body);
+    if (!this.session || generation !== this.generation) throw new ApiError(401, 'Session fermée.');
+    if (profile?.id !== this.session.user.id || typeof profile.name !== 'string' ||
+        typeof profile.email !== 'string' || !Array.isArray(profile.musicPreferences) ||
+        !profile.musicPreferences.every(g => typeof g === 'string')) {
+      throw new ApiError(502, 'Réponse de profil invalide. Réessayez.');
+    }
+    this.session = { ...this.session, user: profile };
+    this.notify();
+    return profile;
   }
 
   async registerDevice(platform: 'IOS' | 'ANDROID', model: string) {

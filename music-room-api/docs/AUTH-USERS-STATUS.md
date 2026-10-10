@@ -1,6 +1,6 @@
 # État de la partie auth, utilisateurs et social
 
-Point du 9 octobre 2026, limité aux commits, à la branche locale et aux tests décrits ci-dessous.
+Point du 10 octobre 2026, limité aux commits, à la branche locale et aux tests décrits ci-dessous.
 Le succès des tests automatisés ne vaut pas validation de toutes les configurations
 de production ni du futur client mobile.
 
@@ -76,11 +76,14 @@ Consulter [AUTH-USERS.md](AUTH-USERS.md) pour les routes et les corps attendus.
 ## Ce qui reste avant l’intégration mobile ou la production
 
 - Frontend Expo : première base créée dans `music-room-mobile` sur `feat/mobile-auth` :
-  écrans email, profil personnel en lecture, serveur configurable, stockage sécurisé,
+  écrans email, profil personnel modifiable, serveur configurable, stockage sécurisé,
   renouvellements sérialisés et enregistrement d’appareil après authentification.
-  TypeScript, 15 tests du client et export des bundles Android/iOS sont vérifiés localement ;
+  Recherche nom/genre, profils d’autrui et gestion des amis sont ajoutés dans la suite locale.
+  Google natif (connexion et liaison) est ajouté le 10 octobre, en attente des clients
+  natifs et de la recette réelle. TypeScript, 34 tests du client et export des bundles
+  Android/iOS sont vérifiés localement ;
   les 21 contrôles `expo-doctor` passent après déduplication des dépendances.
-  Recette réelle Android/iOS, SDK sociaux, écrans amis/invitations et profils d’autrui
+  Recette réelle Android/iOS, configuration Google, SDK Facebook et écrans invitations/appareils
   restent à faire. Voir le [guide mobile](../../music-room-mobile/README.md).
 - Vérifications et publication Meta : reportées ; les tests avec les rôles autorisés
   continuent. Les pages de `sonora-legal` restent à compléter et à héberger.
