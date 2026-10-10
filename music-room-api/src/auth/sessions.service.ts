@@ -115,7 +115,7 @@ export class SessionsService {
     let payload: JwtPayload & { exp?: number };
     try {
       payload = this.jwt.verify<JwtPayload & { exp?: number }>(token, {
-        secret: this.config.get<string>('JWT_ACCESS_SECRET', 'dev_access_secret'),
+        secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
         algorithms: ['HS256'],
       });
     } catch { throw new UnauthorizedException('Token invalide ou expiré'); }

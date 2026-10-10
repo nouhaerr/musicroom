@@ -10,7 +10,7 @@ import {
 } from '@nestjs/websockets';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
-import { Server, Socket } from 'socket.io';
+import { DefaultEventsMap, Server, Socket } from 'socket.io';
 import { Platform } from '../../generated/prisma';
 import { SessionsService } from '../auth/sessions.service';
 import { PartiesService } from '../parties/parties.service';
@@ -45,7 +45,7 @@ export interface SocketData {
   tokenExpiresAt: number;
   device: { id: string; platform: Platform; appVersion: string } | null; // the one the app registered, for the action log
 }
-export type AuthedSocket = Socket<any, any, any, SocketData>;
+export type AuthedSocket = Socket<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, SocketData>;
 
 // Every client message is answered through its acknowledgement with one of these.
 // (Never add a key named `event` here: Nest would send the object as an event instead.)

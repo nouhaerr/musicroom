@@ -2,10 +2,10 @@ import { INestApplication, Logger, ValidationPipe } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { ThrottlerGuard } from '@nestjs/throttler';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { execFileSync } from 'child_process';
 import { io, Socket } from 'socket.io-client';
-import { PrismaClient } from '../generated/prisma';
+import { Prisma, PrismaClient } from '../generated/prisma';
 import { MailService } from '../src/mail/mail.service';
 import { GoogleProvider } from '../src/auth/social/google.provider';
 import { FacebookProvider } from '../src/auth/social/facebook.provider';
@@ -17,7 +17,7 @@ import { SessionsService } from '../src/auth/sessions.service';
 
 // Every run creates and drops ONLY its own random schema (same pattern as auth-users.e2e-spec.ts)
 const schema = `musicroom_test_${randomUUID().replace(/-/g, '')}`;
-const ACCESS_SECRET = 'e2e-access-secret';
+const ACCESS_SECRET = randomBytes(32).toString('hex');
 const verification = new Map<string, string>();
 const jwt = new JwtService();
 const sockets: Socket[] = [];
@@ -99,7 +99,7 @@ beforeAll(async () => {
   url.searchParams.set('schema', schema);
   Object.assign(process.env, {
     DATABASE_URL: url.href,
-    JWT_ACCESS_SECRET: ACCESS_SECRET, JWT_REFRESH_SECRET: 'e2e-refresh-secret',
+    JWT_ACCESS_SECRET: ACCESS_SECRET, JWT_REFRESH_SECRET: randomBytes(32).toString('hex'),
     JWT_ACCESS_EXPIRES_IN: '15m', JWT_REFRESH_EXPIRES_IN: '7d', GOOGLE_AUTH_ENABLED: 'false',
   });
   execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'migrate', 'deploy'], {
@@ -739,9 +739,9 @@ describe('Party snapshots: order, merging and failures', () => {
     const prisma = app.get(PrismaService);
     const transaction = prisma.$transaction.bind(prisma) as (...args: unknown[]) => Promise<unknown>;
     let moved = false;
-    const pauseAfterPartyRead = (tx: any) => new Proxy(tx, {
-      get: (client, model) => model !== 'party' ? client[model] : new Proxy(client.party, {
-        get: (delegate, method) => method !== 'findUniqueOrThrow' ? delegate[method] : async (args: { where: { id: string } }) => {
+    const pauseAfterPartyRead = (tx: Prisma.TransactionClient) => new Proxy(tx, {
+      get: (client, model) => model !== 'party' ? Reflect.get(client, model) : new Proxy(client.party, {
+        get: (delegate, method) => method !== 'findUniqueOrThrow' ? Reflect.get(delegate, method) : async (args: Prisma.PartyFindUniqueOrThrowArgs) => {
           const found = await delegate.findUniqueOrThrow(args);
           if (!moved && args.where.id === id) {
             moved = true;
@@ -752,7 +752,7 @@ describe('Party snapshots: order, merging and failures', () => {
       }),
     });
     spies.push(jest.spyOn(prisma, '$transaction').mockImplementation(((work: unknown, options?: unknown) =>
-      typeof work === 'function' ? transaction((tx: unknown) => work(pauseAfterPartyRead(tx)), options) : transaction(work, options)
+      typeof work === 'function' ? transaction((tx: Prisma.TransactionClient) => work(pauseAfterPartyRead(tx)), options) : transaction(work, options)
     ) as never));
 
     const { received } = await watcher(owner.accessToken, id);
@@ -1462,9 +1462,9 @@ describe('Playlist snapshots: what watchers receive', () => {
     const prisma = app.get(PrismaService);
     const transaction = prisma.$transaction.bind(prisma) as (...args: unknown[]) => Promise<unknown>;
     let changed = false;
-    const pauseAfterPlaylistRead = (tx: any) => new Proxy(tx, {
-      get: (client, model) => model !== 'playlist' ? client[model] : new Proxy(client.playlist, {
-        get: (delegate, method) => method !== 'findUniqueOrThrow' ? delegate[method] : async (args: { where: { id: string } }) => {
+    const pauseAfterPlaylistRead = (tx: Prisma.TransactionClient) => new Proxy(tx, {
+      get: (client, model) => model !== 'playlist' ? Reflect.get(client, model) : new Proxy(client.playlist, {
+        get: (delegate, method) => method !== 'findUniqueOrThrow' ? Reflect.get(delegate, method) : async (args: Prisma.PlaylistFindUniqueOrThrowArgs) => {
           const found = await delegate.findUniqueOrThrow(args);
           if (!changed && args.where.id === id) {
             changed = true;
@@ -1475,7 +1475,7 @@ describe('Playlist snapshots: what watchers receive', () => {
       }),
     });
     spies.push(jest.spyOn(prisma, '$transaction').mockImplementation(((work: unknown, options?: unknown) =>
-      typeof work === 'function' ? transaction((tx: unknown) => work(pauseAfterPlaylistRead(tx)), options) : transaction(work, options)
+      typeof work === 'function' ? transaction((tx: Prisma.TransactionClient) => work(pauseAfterPlaylistRead(tx)), options) : transaction(work, options)
     ) as never));
 
     const { received } = await playlistWatcher(owner.accessToken, id);
