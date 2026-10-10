@@ -123,4 +123,14 @@ export class SessionsService {
     const user = await this.validateAccess(payload);
     return { user, sessionId: payload.sid as string, expiresAt: new Date(payload.exp * 1000) };
   }
+
+  // Which of these sessions are still valid, with the same rule as validateAccess (not revoked,
+  // not expired). One query for any number of sessions: the realtime gateway asks before each send.
+  async validSessionIds(sessionIds: string[]): Promise<Set<string>> {
+    const sessions = await this.prisma.authSession.findMany({
+      where: { id: { in: sessionIds }, revokedAt: null, expiresAt: { gt: new Date() } },
+      select: { id: true },
+    });
+    return new Set(sessions.map((session) => session.id));
+  }
 }

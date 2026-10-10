@@ -288,10 +288,25 @@ export class PartiesService {
   // Autorisations
   // -----------------------------------------------------------------
   private async assertCanView(party: Party, userId: string): Promise<void> {
-    if (party.visibility === Visibility.PUBLIC) return;
-    if (party.ownerId === userId) return;
-    if (await this.isMemberOrInvited(party.id, userId)) return;
+    if ((await this.viewers(party, [userId])).has(userId)) return;
     throw new ForbiddenException('Cet événement est privé');
+  }
+
+  // Which of these users may see the party: everyone if it is public, otherwise its owner and
+  // the users with a pending or accepted invitation. The single place where this rule is written:
+  // GET /parties/:id uses it for one user, the realtime gateway for everyone about to receive a snapshot.
+  async viewers(party: Pick<Party, 'id' | 'ownerId' | 'visibility'>, userIds: string[]): Promise<Set<string>> {
+    if (party.visibility === Visibility.PUBLIC) return new Set(userIds);
+    const allowed = new Set(userIds.filter((id) => id === party.ownerId));
+    const others = userIds.filter((id) => id !== party.ownerId);
+    if (others.length > 0) {
+      const invitations = await this.prisma.invitation.findMany({
+        where: { partyId: party.id, invitedUserId: { in: others }, ...activeInvitation },
+        select: { invitedUserId: true },
+      });
+      for (const { invitedUserId } of invitations) allowed.add(invitedUserId);
+    }
+    return allowed;
   }
 
   private async assertCanVote(party: Party, userId: string, dto: VoteDto): Promise<void> {

@@ -22,6 +22,9 @@ const MAX_SUBSCRIPTIONS = 20; // how many parties one connection may watch at th
 const SNAPSHOT_INTERVAL_MS = 200; // at most 5 snapshots per second per room: changes in between are merged
 const RETRY_DELAY_MS = 1000; // after a failed read (e.g. database busy), try again this much later
 
+// What the access rule of a party needs to know about it
+type PartyAccess = Parameters<PartiesService['viewers']>[0];
+
 // What is waiting to be sent to one room
 interface Pending {
   target: SubscribeDto;
@@ -141,6 +144,33 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
     return this.parties.snapshot(target.id);
   }
 
+  // The connections currently in a room: all of them, or only those among `ids`
+  private socketsIn(room: string, ids?: Set<string>): AuthedSocket[] {
+    const members = this.server.sockets.adapter.rooms.get(room) ?? new Set<string>();
+    const wanted = ids ? [...ids].filter((id) => members.has(id)) : [...members];
+    return wanted.map((id) => this.server.sockets.sockets.get(id)).filter((socket) => socket !== undefined);
+  }
+
+  // A logout or a revoked invitation must also take effect on a connection that is already
+  // subscribed: right before a snapshot goes out, everyone about to receive it is checked again,
+  // with two queries whatever their number. Whoever fails is out of the room before the send.
+  private async removeUnauthorized(target: SubscribeDto, party: PartyAccess, sockets: AuthedSocket[]) {
+    if (sockets.length === 0) return;
+    const [loggedIn, viewers] = await Promise.all([
+      this.sessions.validSessionIds(sockets.map((socket) => socket.data.sessionId)),
+      this.parties.viewers(party, sockets.map((socket) => socket.data.userId)),
+    ]);
+    for (const socket of sockets) {
+      if (!loggedIn.has(socket.data.sessionId)) {
+        socket.emit('session:expired');
+        socket.disconnect(true); // closing it also takes it out of every room
+      } else if (!viewers.has(socket.data.userId)) {
+        await socket.leave(roomOf(target));
+        socket.emit('unsubscribed', { type: target.type, id: target.id, code: 'FORBIDDEN' });
+      }
+    }
+  }
+
   // Asks for a snapshot of `target`: for the whole room (something changed), or only for one
   // socket that just subscribed. If snapshots are already being sent to that room, the request
   // is merged into the next one instead of starting a second sender.
@@ -170,12 +200,15 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
         if (!this.server.sockets.adapter.rooms.get(room)?.size) continue; // nobody watching: no read
         const snapshot = await this.takeSnapshot(pending.target);
         const event = `${pending.target.type}:snapshot`;
+        // The snapshot is read first, the receivers are checked after: whoever lost access
+        // before this state existed is found out here and never sees it
+        const receivers = this.socketsIn(room, everyone ? undefined : newcomers);
+        await this.removeUnauthorized(pending.target, snapshot.party, receivers);
         if (everyone) {
           this.server.to(room).emit(event, snapshot);
         } else {
-          for (const id of newcomers) {
-            const socket = this.server.sockets.sockets.get(id);
-            if (socket?.rooms.has(room)) socket.emit(event, snapshot); // still connected and subscribed
+          for (const socket of receivers) {
+            if (socket.rooms.has(room)) socket.emit(event, snapshot); // still subscribed
           }
         }
       } catch (err) {

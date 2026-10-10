@@ -12,6 +12,7 @@ import { FacebookProvider } from '../src/auth/social/facebook.provider';
 import { RealtimeGateway } from '../src/realtime/realtime.gateway';
 import { PartiesService } from '../src/parties/parties.service';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { SessionsService } from '../src/auth/sessions.service';
 
 // Every run creates and drops ONLY its own random schema (same pattern as auth-users.e2e-spec.ts)
 const schema = `musicroom_test_${randomUUID().replace(/-/g, '')}`;
@@ -48,6 +49,7 @@ async function account() {
   expect(login.status).toBe(201);
   return {
     id: registered.body.id as string,
+    email,
     accessToken: login.body.accessToken as string,
     refreshToken: login.body.refreshToken as string,
     verificationToken,
@@ -905,5 +907,341 @@ describe('Party snapshots: order, merging and failures', () => {
 
     expect(received[0].party.id).toBe(id);
     expect(errors()).toEqual([`Snapshot of party:${id} failed: database busy`]);
+  });
+});
+
+// -----------------------------------------------------------------
+// Party snapshots: who is still allowed to receive them
+// -----------------------------------------------------------------
+const PASSWORD = 'Test-password-123!';
+
+// What a connection is told besides snapshots: its removal from a party, or the end of its session
+function recordNotices(socket: Socket) {
+  const notices: unknown[][] = [];
+  socket.on('unsubscribed', (payload: unknown) => notices.push(['unsubscribed', payload]));
+  socket.on('session:expired', () => notices.push(['session:expired']));
+  return notices;
+}
+
+const invite = (id: string, userId: string, ownerToken: string) =>
+  request('POST', `/parties/${id}/invite`, { userId }, ownerToken);
+const revoke = (id: string, userId: string, ownerToken: string) =>
+  request('DELETE', `/parties/${id}/invitations/${userId}`, undefined, ownerToken);
+
+// A private party with one suggested song, its owner and a guest who is invited to it
+async function privateParty() {
+  const owner = await account();
+  const guest = await account();
+  const id = await party(owner.accessToken, 'PRIVATE');
+  const entry = (await suggest(id, track(), owner.accessToken)).body.id as string;
+  const invitation = await invite(id, guest.id, owner.accessToken);
+  expect(invitation.status).toBe(201);
+  return { owner, guest, id, entry, invitationId: invitation.body.id as string };
+}
+
+describe('Party snapshots: who is still allowed to receive them', () => {
+  it('stops sending to a connection whose session was logged out, and closes it', async () => {
+    const owner = await account();
+    const guest = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const staying = await watcher(owner.accessToken, id);
+    const leaving = await watcher(guest.accessToken, id);
+    const notices = recordNotices(leaving.socket);
+    const closed = new Promise((resolve) => leaving.socket.once('disconnect', resolve));
+    expect((await request('POST', '/auth/logout', {}, guest.accessToken)).status).toBe(201);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => staying.received.length === 2);
+
+    expect(await closed).toBe('io server disconnect');
+    expect(notices).toEqual([['session:expired']]);
+    expect(leaving.received).toHaveLength(1);
+    expect(watchers(id)).toBe(1);
+  });
+
+  it('closes only the connections of the session that ended, not the other devices of the same user', async () => {
+    const owner = await account();
+    const user = await account();
+    const tablet = await request('POST', '/auth/login', { email: user.email, password: PASSWORD });
+    expect(tablet.status).toBe(201);
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const onPhone = await watcher(user.accessToken, id);
+    const onTablet = await watcher(tablet.body.accessToken, id);
+    const phoneNotices = recordNotices(onPhone.socket);
+    const tabletNotices = recordNotices(onTablet.socket);
+    expect((await request('POST', '/auth/logout', {}, user.accessToken)).status).toBe(201);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => onTablet.received.length === 2 && phoneNotices.length === 1);
+
+    expect(phoneNotices).toEqual([['session:expired']]);
+    expect(onPhone.received).toHaveLength(1);
+    expect(tabletNotices).toEqual([]);
+    expect(onTablet.socket.connected).toBe(true);
+  });
+
+  it('closes every connection of a user whose refresh token was used twice', async () => {
+    const owner = await account();
+    const user = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(user.accessToken, id);
+    const notices = recordNotices(watching.socket);
+    expect((await request('POST', '/auth/refresh', { refreshToken: user.refreshToken })).status).toBe(201);
+    // The same token again looks like a stolen one: every session of the user is revoked
+    expect((await request('POST', '/auth/refresh', { refreshToken: user.refreshToken })).status).toBe(401);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => notices.length === 1);
+
+    expect(notices).toEqual([['session:expired']]);
+    expect(watching.received).toHaveLength(1);
+  });
+
+  it('treats a session past its expiry date like a logout', async () => {
+    const owner = await account();
+    const user = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(user.accessToken, id);
+    const notices = recordNotices(watching.socket);
+    await app.get(PrismaService).authSession.updateMany({ where: { userId: user.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => notices.length === 1);
+
+    expect(notices).toEqual([['session:expired']]);
+    expect(watching.received).toHaveLength(1);
+  });
+
+  it('removes a guest from the room as soon as the invitation is revoked, and lets them back after a new one', async () => {
+    const { owner, guest, id } = await privateParty();
+    const host = await watcher(owner.accessToken, id);
+    const invited = await watcher(guest.accessToken, id);
+    const notices = recordNotices(invited.socket);
+
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    await until(() => notices.length === 1);
+
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+    expect(invited.socket.connected).toBe(true);
+    expect(watchers(id)).toBe(1);
+
+    // What happens in the party afterwards reaches the owner only
+    const seenByHost = host.received.length;
+    expect((await suggest(id, track(), owner.accessToken)).status).toBe(201);
+    await until(() => host.received.length === seenByHost + 1);
+    await sleep(300);
+    expect(invited.received).toHaveLength(1);
+    expect(await watch(invited.socket, id)).toEqual(refusal('FORBIDDEN'));
+
+    expect((await invite(id, guest.id, owner.accessToken)).status).toBe(201);
+    expect(await watch(invited.socket, id)).toEqual({ ok: true });
+    await until(() => invited.received.length === 2);
+    expect(notices).toHaveLength(1);
+  });
+
+  it('removes a guest who declines the invitation while watching', async () => {
+    const { owner, guest, id, invitationId } = await privateParty();
+    const host = await watcher(owner.accessToken, id);
+    const invited = await watcher(guest.accessToken, id);
+    const notices = recordNotices(invited.socket);
+
+    expect((await request('POST', `/invitations/${invitationId}/decline`, {}, guest.accessToken)).status).toBe(201);
+    await until(() => notices.length === 1);
+
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+    expect(watchers(id)).toBe(1);
+    expect(host.socket.connected).toBe(true);
+  });
+
+  it('keeps a guest in the room when the invitation is accepted, and sends nothing for it', async () => {
+    const { owner, guest, id, entry, invitationId } = await privateParty();
+    const host = await watcher(owner.accessToken, id);
+    const invited = await watcher(guest.accessToken, id);
+    const notices = recordNotices(invited.socket);
+
+    expect((await request('POST', `/invitations/${invitationId}/accept`, {}, guest.accessToken)).status).toBe(201);
+    await sleep(500);
+    // Accepting changes nothing a watcher sees: no snapshot
+    expect(host.received).toHaveLength(1);
+    expect(invited.received).toHaveLength(1);
+
+    expect((await vote(id, entry, owner.accessToken)).status).toBe(201);
+    await until(() => invited.received.length === 2);
+    expect(notices).toEqual([]);
+    expect(invited.last().queue[0].voteCount).toBe(1);
+  });
+
+  it('keeps the other subscriptions of a guest removed from one party', async () => {
+    const { owner, guest, id } = await privateParty();
+    const open = await partyWithSongs(owner.accessToken, 1);
+    const invited = await watcher(guest.accessToken, id);
+    expect(await watch(invited.socket, open.id)).toEqual({ ok: true });
+    await until(() => invited.received.length === 2);
+    const notices = recordNotices(invited.socket);
+
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    await until(() => notices.length === 1);
+    expect((await vote(open.id, open.entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => invited.received.length === 3);
+
+    expect(invited.last().party.id).toBe(open.id);
+    expect(invited.last().queue[0].voteCount).toBe(1);
+    expect(watchers(open.id)).toBe(1);
+    expect(watchers(id)).toBe(0);
+  });
+
+  it('checks who receives a snapshot when it is sent, not when it was asked for', async () => {
+    const { owner, guest, id, entry } = await privateParty();
+    const host = await watcher(owner.accessToken, id);
+    const invited = await watcher(guest.accessToken, id);
+    const notices = recordNotices(invited.socket);
+    const held = holdNextRead(id);
+
+    expect((await vote(id, entry, owner.accessToken)).status).toBe(201);
+    await held.read;
+    // The guest loses access while that snapshot is on its way
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    held.release();
+    await until(() => host.received.length >= 2 && notices.length === 1);
+    await sleep(400);
+
+    expect(invited.received).toHaveLength(1);
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+  });
+
+  it('checks a new subscriber again when its first snapshot was delayed', async () => {
+    const { owner, guest, id } = await privateParty();
+    const host = await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+    expect((await suggest(id, track(), owner.accessToken)).status).toBe(201);
+    await held.read;
+
+    // Subscribes while the room's snapshot is held, then loses access before its own is read
+    const socket = await connect({ auth: { token: guest.accessToken } });
+    const received = record(socket);
+    const notices = recordNotices(socket);
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    held.release();
+    await until(() => host.received.length >= 2 && notices.length === 1);
+    await sleep(600);
+
+    expect(received).toHaveLength(0);
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+  });
+
+  it('checks any number of watchers with one question about sessions and one about invitations', async () => {
+    const { owner, id } = await privateParty();
+    const guests = [await account(), await account(), await account(), await account()];
+    for (const guest of guests) expect((await invite(id, guest.id, owner.accessToken)).status).toBe(201);
+    const everyone = [await watcher(owner.accessToken, id)];
+    for (const guest of guests) everyone.push(await watcher(guest.accessToken, id));
+    await sleep(300);
+    const sessionChecks = jest.spyOn(app.get(SessionsService), 'validSessionIds');
+    const viewerChecks = jest.spyOn(app.get(PartiesService), 'viewers');
+    spies.push(sessionChecks, viewerChecks);
+
+    expect((await suggest(id, track(), owner.accessToken)).status).toBe(201);
+    await until(() => everyone.every((watching) => watching.received.length === 2));
+
+    expect(sessionChecks.mock.calls.map(([ids]) => ids.length)).toEqual([5]);
+    // The request itself asks for its one user; the send asks once for the five watchers
+    expect(viewerChecks.mock.calls.map(([, ids]) => ids.length).sort()).toEqual([1, 5]);
+  });
+
+  it('sends nothing when the check itself fails, and tries again', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const errors = loggedErrors();
+    const sessions = app.get(SessionsService);
+    const original = SessionsService.prototype.validSessionIds.bind(sessions);
+    let failed = false;
+    spies.push(jest.spyOn(sessions, 'validSessionIds').mockImplementation(async (ids: string[]) => {
+      if (failed) return original(ids);
+      failed = true;
+      throw new Error('database busy');
+    }));
+
+    const changedAt = Date.now();
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => watching.received.length === 2);
+
+    expect(Date.now() - changedAt).toBeGreaterThanOrEqual(950);
+    expect(watching.last().queue[0].voteCount).toBe(1);
+    expect(errors()).toEqual([`Snapshot of party:${id} failed: database busy`]);
+  });
+});
+
+describe('Party snapshots: who is still allowed to receive them (edge cases)', () => {
+  it('gives no access to a private party through an invitation to another one', async () => {
+    const { guest } = await privateParty();
+    const otherOwner = await account();
+    const other = await party(otherOwner.accessToken, 'PRIVATE');
+    const socket = await connect({ auth: { token: guest.accessToken } });
+
+    expect(await watch(socket, other)).toEqual(refusal('FORBIDDEN'));
+    expect((await request('GET', `/parties/${other}`, undefined, guest.accessToken)).status).toBe(403);
+  });
+
+  it('sends no first snapshot to a new subscriber removed while it was being read', async () => {
+    const { owner, guest, id } = await privateParty();
+    await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+    const socket = await connect({ auth: { token: guest.accessToken } });
+    const received = record(socket);
+    const notices = recordNotices(socket);
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    await held.read;
+
+    // Nothing changed in the party: the snapshot being read is for the new subscriber alone
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    held.release();
+    await until(() => notices.length === 1);
+    await sleep(600);
+
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+    expect(received).toHaveLength(0);
+  });
+
+  it('checks a new subscriber whose session ended before its first snapshot', async () => {
+    const owner = await account();
+    const user = await account();
+    const id = await party(owner.accessToken);
+    await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+    const socket = await connect({ auth: { token: user.accessToken } });
+    const received = record(socket);
+    const notices = recordNotices(socket);
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    await held.read;
+
+    // Nothing changed in the party: this snapshot is for the new subscriber alone
+    expect((await request('POST', '/auth/logout', {}, user.accessToken)).status).toBe(201);
+    held.release();
+    await until(() => notices.length === 1);
+    await sleep(300);
+
+    expect(notices).toEqual([['session:expired']]);
+    expect(received).toHaveLength(0);
+    expect(watchers(id)).toBe(1);
+  });
+
+  it('asks the database nothing when nobody is left to receive the snapshot', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    await held.read;
+    expect(await send(socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+    const sessionChecks = jest.spyOn(app.get(SessionsService), 'validSessionIds');
+    spies.push(sessionChecks);
+
+    held.release();
+    await sleep(400);
+
+    expect(sessionChecks).not.toHaveBeenCalled();
   });
 });
