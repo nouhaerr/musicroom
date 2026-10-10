@@ -8,11 +8,23 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { ResourceType, Visibility, VoteLicense, Party } from '../../generated/prisma';
+import { Prisma, ResourceType, Visibility, VoteLicense, Party } from '../../generated/prisma';
 import { distanceMeters } from '../common/geo';
 import { CreatePartyDto } from './dto/create-party.dto';
 import { NextTrackDto, SuggestSongDto, VoteDto } from './dto/party-actions.dto';
 import { SongsService } from '../songs/songs.service';
+import { RealtimeService } from '../realtime/realtime.service';
+
+// Play order of a queue: most votes first, earliest suggestion wins ties, then the id so that two
+// reads always agree. Shared by GET /queue, "next" and the realtime snapshot, so they never differ.
+const QUEUE_ORDER: Prisma.PartySongOrderByWithRelationInput[] = [
+  { voteCount: 'desc' },
+  { createdAt: 'asc' },
+  { id: 'asc' },
+];
+// What each queue entry comes with, in GET /queue and in the realtime snapshot
+const QUEUE_ENTRY = { song: true, _count: { select: { votes: true } } } satisfies Prisma.PartySongInclude;
+const SNAPSHOT_QUEUE_SIZE = 100; // a realtime snapshot holds as many entries as GET /queue's largest page
 
 @Injectable()
 export class PartiesService {
@@ -20,6 +32,7 @@ export class PartiesService {
     private readonly prisma: PrismaService,
     private readonly invitations: InvitationsService,
     private readonly songsService: SongsService,
+    private readonly realtime: RealtimeService,
   ) {}
 
   // -----------------------------------------------------------------
@@ -89,6 +102,22 @@ export class PartiesService {
     return this.prisma.party.findUnique({ where: { id }, include: { nowPlaying: true } });
   }
 
+  // Everything a client shows for a party (the same data as GET /parties/:id and GET /queue), read
+  // as one consistent state: a change committed between two of the reads below cannot show up in
+  // only some of them. The realtime gateway sends it to everyone watching the party.
+  snapshot(partyId: string) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const party = await tx.party.findUniqueOrThrow({ where: { id: partyId }, include: { nowPlaying: true } });
+        const where = { partyPlaylistId: party.partyPlaylistId };
+        const queue = await tx.partySong.findMany({ where, include: QUEUE_ENTRY, orderBy: QUEUE_ORDER, take: SNAPSHOT_QUEUE_SIZE });
+        const queueLength = await tx.partySong.count({ where });
+        return { party, queue, queueLength };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
+
   // -----------------------------------------------------------------
   // Membres / invitations
   // -----------------------------------------------------------------
@@ -114,10 +143,12 @@ export class PartiesService {
     const song = await this.songsService.findOrCreateByExternalId(dto.externalId);
 
     try {
-      return await this.prisma.partySong.create({
+      const partySong = await this.prisma.partySong.create({
         data: { partyPlaylistId: party.partyPlaylistId, songId: song.id },
         include: { song: true },
       });
+      this.realtime.partyChanged(party.id);
+      return partySong;
     } catch (e: unknown) {
       // Contrainte @@unique([partyPlaylistId, songId]) : le morceau a déjà été suggéré
       if (this.isUniqueConstraintError(e)) {
@@ -133,8 +164,8 @@ export class PartiesService {
 
     return this.prisma.partySong.findMany({
       where: { partyPlaylistId: party.partyPlaylistId },
-      include: { song: true, _count: { select: { votes: true } } },
-      orderBy: [{ voteCount: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }], ...paginate(query),
+      include: QUEUE_ENTRY,
+      orderBy: QUEUE_ORDER, ...paginate(query),
     });
   }
 
@@ -148,7 +179,7 @@ export class PartiesService {
       throw new ForbiddenException('Only the party owner can change the track');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const playback = await this.prisma.$transaction(async (tx) => {
       // Check the version and take the next one in a single atomic statement. It also locks
       // the party row: a concurrent "next" waits here, then fails this same check.
       const { count } = await tx.party.updateMany({
@@ -159,10 +190,9 @@ export class PartiesService {
         throw new ConflictException('Playback has already changed: refresh the party');
       }
 
-      // Same order as getQueue: most votes first, earliest suggestion wins ties
       const next = await tx.partySong.findFirst({
         where: { partyPlaylistId: party.partyPlaylistId },
-        orderBy: [{ voteCount: 'desc' }, { createdAt: 'asc' }, { id: 'asc' }],
+        orderBy: QUEUE_ORDER,
       });
       if (!next) {
         // Nothing left to play: stop playback, so nobody keeps seeing a finished song as playing.
@@ -191,6 +221,8 @@ export class PartiesService {
         include: { nowPlaying: true },
       });
     });
+    this.realtime.partyChanged(party.id);
+    return playback;
   }
 
   // -----------------------------------------------------------------
@@ -209,7 +241,7 @@ export class PartiesService {
       // Transaction : la ligne de vote (source de vérité "qui a voté quoi",
       // protégée par @@unique([partySongId, userId]) contre le double-vote)
       // ET le compteur dénormalisé sont mis à jour atomiquement.
-      return await this.prisma.$transaction(async (tx) => {
+      const voted = await this.prisma.$transaction(async (tx) => {
         await tx.vote.create({ data: { partySongId, userId } });
         return tx.partySong.update({
           where: { id: partySongId },
@@ -217,6 +249,8 @@ export class PartiesService {
           include: { song: true },
         });
       });
+      this.realtime.partyChanged(party.id);
+      return voted;
     } catch (e: unknown) {
       if (this.isUniqueConstraintError(e)) {
         throw new ConflictException('Vous avez déjà voté pour ce morceau');
@@ -233,8 +267,11 @@ export class PartiesService {
     const party = await this.findByIdOrThrow(partyId);
     await this.assertCanView(party, userId);
 
-    return this.prisma.$transaction(async (tx) => {
-      const deleted = await tx.vote.deleteMany({ where: { partySongId, userId } });
+    const unvoted = await this.prisma.$transaction(async (tx) => {
+      // Only a song of this party's queue: through another party's URL, the vote is not found
+      const deleted = await tx.vote.deleteMany({
+        where: { partySongId, userId, partySong: { partyPlaylistId: party.partyPlaylistId } },
+      });
       if (deleted.count === 0) {
         throw new NotFoundException("Vous n'avez pas voté pour ce morceau");
       }
@@ -243,16 +280,33 @@ export class PartiesService {
         data: { voteCount: { decrement: 1 } },
       });
     });
+    this.realtime.partyChanged(party.id);
+    return unvoted;
   }
 
   // -----------------------------------------------------------------
   // Autorisations
   // -----------------------------------------------------------------
   private async assertCanView(party: Party, userId: string): Promise<void> {
-    if (party.visibility === Visibility.PUBLIC) return;
-    if (party.ownerId === userId) return;
-    if (await this.isMemberOrInvited(party.id, userId)) return;
+    if ((await this.viewers(party, [userId])).has(userId)) return;
     throw new ForbiddenException('Cet événement est privé');
+  }
+
+  // Which of these users may see the party: everyone if it is public, otherwise its owner and
+  // the users with a pending or accepted invitation. The single place where this rule is written:
+  // GET /parties/:id uses it for one user, the realtime gateway for everyone about to receive a snapshot.
+  async viewers(party: Pick<Party, 'id' | 'ownerId' | 'visibility'>, userIds: string[]): Promise<Set<string>> {
+    if (party.visibility === Visibility.PUBLIC) return new Set(userIds);
+    const allowed = new Set(userIds.filter((id) => id === party.ownerId));
+    const others = userIds.filter((id) => id !== party.ownerId);
+    if (others.length > 0) {
+      const invitations = await this.prisma.invitation.findMany({
+        where: { partyId: party.id, invitedUserId: { in: others }, ...activeInvitation },
+        select: { invitedUserId: true },
+      });
+      for (const { invitedUserId } of invitations) allowed.add(invitedUserId);
+    }
+    return allowed;
   }
 
   private async assertCanVote(party: Party, userId: string, dto: VoteDto): Promise<void> {

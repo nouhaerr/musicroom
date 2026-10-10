@@ -1,0 +1,1863 @@
+import { INestApplication, Logger, ValidationPipe } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { Test } from '@nestjs/testing';
+import { ThrottlerGuard } from '@nestjs/throttler';
+import { randomBytes, randomUUID } from 'crypto';
+import { execFileSync } from 'child_process';
+import { io, Socket } from 'socket.io-client';
+import { Prisma, PrismaClient } from '../generated/prisma';
+import { MailService } from '../src/mail/mail.service';
+import { GoogleProvider } from '../src/auth/social/google.provider';
+import { FacebookProvider } from '../src/auth/social/facebook.provider';
+import { RealtimeGateway } from '../src/realtime/realtime.gateway';
+import { PartiesService } from '../src/parties/parties.service';
+import { PlaylistsService } from '../src/playlists/playlists.service';
+import { PrismaService } from '../src/prisma/prisma.service';
+import { SessionsService } from '../src/auth/sessions.service';
+
+// Every run creates and drops ONLY its own random schema (same pattern as auth-users.e2e-spec.ts)
+const schema = `musicroom_test_${randomUUID().replace(/-/g, '')}`;
+const ACCESS_SECRET = randomBytes(32).toString('hex');
+const verification = new Map<string, string>();
+const jwt = new JwtService();
+const sockets: Socket[] = [];
+const spies: jest.SpyInstance[] = [];
+const realFetch = global.fetch;
+let app: INestApplication;
+let admin: PrismaClient;
+let base: string;
+let schemaCreated = false;
+let throttling: jest.SpyInstance;
+let deezer: jest.SpyInstance;
+
+async function request(method: string, path: string, body?: unknown, token?: string) {
+  const response = await realFetch(base + path, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return { status: response.status, body: await response.json() };
+}
+
+async function account() {
+  const email = `${randomUUID()}@example.com`;
+  const password = 'Test-password-123!';
+  const registered = await request('POST', '/auth/register', { email, password, name: 'Listener' });
+  expect(registered.status).toBe(201);
+  const verificationToken = verification.get(email)!;
+  expect((await request('GET', `/auth/verify-email?token=${verificationToken}`)).status).toBe(200);
+  const login = await request('POST', '/auth/login', { email, password });
+  expect(login.status).toBe(201);
+  return {
+    id: registered.body.id as string,
+    email,
+    accessToken: login.body.accessToken as string,
+    refreshToken: login.body.refreshToken as string,
+    verificationToken,
+  };
+}
+
+async function party(ownerToken: string, visibility: 'PUBLIC' | 'PRIVATE' = 'PUBLIC'): Promise<string> {
+  const created = await request('POST', '/parties', { name: 'Realtime test', visibility }, ownerToken);
+  expect(created.status).toBe(201);
+  return created.body.id;
+}
+
+// Sends a message and waits for the server's acknowledgement (fails after 3 s without one)
+const send = (socket: Socket, event: string, ...args: unknown[]) => socket.timeout(3000).emitWithAck(event, ...args);
+
+const watch = (socket: Socket, id: string) => send(socket, 'subscribe', { type: 'party', id });
+
+// How many connections the server currently has in a party's room
+const watchers = (id: string) => app.get(RealtimeGateway).server.sockets.adapter.rooms.get(`party:${id}`)?.size ?? 0;
+
+const refusal = (code: string) => ({ ok: false, error: { code, message: expect.any(String) } });
+
+// Resolves with the connected socket, or rejects with the server's refusal message
+function connect(options: Parameters<typeof io>[1] = {}): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = io(base, { transports: ['websocket'], reconnection: false, forceNew: true, ...options });
+    sockets.push(socket);
+    socket.once('connect', () => resolve(socket));
+    socket.once('connect_error', (error) => reject(error));
+  });
+}
+
+// The claims of a real access token, re-signed with other options to build invalid variants
+function claims(accessToken: string) {
+  const { sub, email, sid, type } = jwt.decode(accessToken) as Record<string, string>;
+  return { sub, email, sid, type };
+}
+const inSeconds = (seconds: number) => Math.floor(Date.now() / 1000) + seconds;
+
+beforeAll(async () => {
+  if (!process.env.TEST_DATABASE_URL) throw new Error('TEST_DATABASE_URL is required; tests use a disposable schema within this database.');
+  const url = new URL(process.env.TEST_DATABASE_URL);
+  admin = new PrismaClient({ datasources: { db: { url: url.href } } });
+  await admin.$executeRawUnsafe(`CREATE SCHEMA "${schema}"`);
+  schemaCreated = true;
+  url.searchParams.set('schema', schema);
+  Object.assign(process.env, {
+    DATABASE_URL: url.href,
+    JWT_ACCESS_SECRET: ACCESS_SECRET, JWT_REFRESH_SECRET: randomBytes(32).toString('hex'),
+    JWT_ACCESS_EXPIRES_IN: '15m', JWT_REFRESH_EXPIRES_IN: '7d', GOOGLE_AUTH_ENABLED: 'false',
+  });
+  execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'migrate', 'deploy'], {
+    env: process.env, stdio: 'pipe', timeout: 60000,
+  });
+
+  // Fake Deezer: answers /track/:id with a track of that id; any other request goes through
+  deezer = jest.spyOn(global, 'fetch').mockImplementation(async (input, init) => {
+    const target = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    const match = target.match(/^https:\/\/api\.deezer\.com\/track\/(\d+)$/);
+    if (!match) return realFetch(input, init);
+    const id = Number(match[1]);
+    return new Response(JSON.stringify({
+      id, title: `Track ${id}`, duration: 200, link: `https://www.deezer.com/track/${id}`,
+      preview: '', artist: { name: 'Test Artist' }, album: { cover_medium: '' },
+    }), { status: 200 });
+  });
+
+  // Load the module only after the test environment is configured.
+  const { AppModule } = await import('../src/app.module');
+  throttling = jest.spyOn(ThrottlerGuard.prototype, 'canActivate').mockResolvedValue(true);
+  const testModule = await Test.createTestingModule({ imports: [AppModule] })
+    .overrideProvider(MailService).useValue({
+      sendVerificationEmail: async (email: string, token: string) => { verification.set(email, token); },
+      sendPasswordResetEmail: async () => undefined,
+    })
+    .overrideProvider(GoogleProvider).useValue({ verify: jest.fn() })
+    .overrideProvider(FacebookProvider).useValue({ verify: jest.fn() })
+    .compile();
+  app = testModule.createNestApplication({ logger: false });
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }));
+  await app.listen(0, '127.0.0.1');
+  base = await app.getUrl();
+});
+
+afterEach(() => {
+  for (const socket of sockets.splice(0)) socket.disconnect();
+  for (const spy of spies.splice(0)) spy.mockRestore();
+});
+
+afterAll(async () => {
+  if (app) await app.close();
+  throttling?.mockRestore();
+  deezer?.mockRestore();
+  if (schemaCreated) await admin.$executeRawUnsafe(`DROP SCHEMA "${schema}" CASCADE`);
+  if (admin) await admin.$disconnect();
+});
+
+describe('Realtime connection: only a valid login gets in', () => {
+  it('accepts a valid access token sent in the handshake auth', async () => {
+    const { accessToken } = await account();
+    const socket = await connect({ auth: { token: accessToken } });
+    expect(socket.connected).toBe(true);
+  });
+
+  it('accepts a valid access token sent as an Authorization header', async () => {
+    const { accessToken } = await account();
+    const socket = await connect({ extraHeaders: { Authorization: `Bearer ${accessToken}` } });
+    expect(socket.connected).toBe(true);
+  });
+
+  it('also works over HTTP long-polling, the fallback when WebSocket is blocked', async () => {
+    const { accessToken } = await account();
+    const socket = await connect({ transports: ['polling'], auth: { token: accessToken } });
+    expect(socket.connected).toBe(true);
+  });
+
+  it.each([
+    ['no token at all', () => ({})],
+    ['an empty token', () => ({ auth: { token: '' } })],
+    ['a token that is not a JWT', () => ({ auth: { token: 'not-a-token' } })],
+    ['a token that is a number', () => ({ auth: { token: 12345 } })],
+    ['a token that is an object', () => ({ auth: { token: { sub: 'x' } } })],
+    ['a token that is a list', () => ({ auth: { token: ['a', 'b'] } })],
+    ['an oversized token', () => ({ auth: { token: 'a'.repeat(5000) } })],
+    ['a header without the Bearer prefix', () => ({ extraHeaders: { Authorization: 'not-a-token' } })],
+  ])('refuses %s', async (_label, options) => {
+    await expect(connect(options())).rejects.toThrow('Unauthorized');
+  });
+
+  it.each([
+    ['signed with another secret', (c: object) => jwt.sign({ ...c, exp: inSeconds(60) }, { secret: 'attacker-secret', algorithm: 'HS256' })],
+    ['that is already expired', (c: object) => jwt.sign({ ...c, exp: inSeconds(-60) }, { secret: ACCESS_SECRET, algorithm: 'HS256' })],
+    ['signed with another algorithm', (c: object) => jwt.sign({ ...c, exp: inSeconds(60) }, { secret: ACCESS_SECRET, algorithm: 'HS512' })],
+    ['with no signature (alg none)', (c: object) => jwt.sign({ ...c, exp: inSeconds(60) }, { secret: '', algorithm: 'none' })],
+    ['without an expiry', (c: object) => jwt.sign({ ...c }, { secret: ACCESS_SECRET, algorithm: 'HS256' })],
+    ['for a session that does not exist', (c: object) => jwt.sign({ ...c, sid: randomUUID(), exp: inSeconds(60) }, { secret: ACCESS_SECRET, algorithm: 'HS256' })],
+    ['for another user than its session', (c: object) => jwt.sign({ ...c, sub: randomUUID(), exp: inSeconds(60) }, { secret: ACCESS_SECRET, algorithm: 'HS256' })],
+    ['of the wrong type', (c: object) => jwt.sign({ ...c, type: 'refresh', exp: inSeconds(60) }, { secret: ACCESS_SECRET, algorithm: 'HS256' })],
+  ])('refuses a token %s', async (_label, forge) => {
+    const { accessToken } = await account();
+    await expect(connect({ auth: { token: forge(claims(accessToken)) } })).rejects.toThrow('Unauthorized');
+  });
+
+  it('refuses the refresh token and the email verification token of a real account', async () => {
+    const { refreshToken, verificationToken } = await account();
+    await expect(connect({ auth: { token: refreshToken } })).rejects.toThrow('Unauthorized');
+    await expect(connect({ auth: { token: verificationToken } })).rejects.toThrow('Unauthorized');
+  });
+
+  it('refuses an access token after logout, even though it has not expired', async () => {
+    const { accessToken } = await account();
+    await connect({ auth: { token: accessToken } });
+    expect((await request('POST', '/auth/logout', {}, accessToken)).status).toBe(201);
+    await expect(connect({ auth: { token: accessToken } })).rejects.toThrow('Unauthorized');
+  });
+
+  it('closes the connection at the moment the access token expires', async () => {
+    const { accessToken } = await account();
+    const shortLived = jwt.sign({ ...claims(accessToken), exp: inSeconds(2) }, { secret: ACCESS_SECRET, algorithm: 'HS256' });
+    const socket = await connect({ auth: { token: shortLived } });
+    const events: string[] = [];
+    socket.on('session:expired', () => events.push('session:expired'));
+
+    const reason = await new Promise((resolve) => socket.once('disconnect', resolve));
+
+    expect(events).toEqual(['session:expired']);
+    expect(reason).toBe('io server disconnect');
+  }, 10000);
+
+  it('keeps accepting valid logins after a burst of refused ones', async () => {
+    const { accessToken } = await account();
+    const refused = await Promise.allSettled(Array.from({ length: 20 }, () => connect({ auth: { token: 'garbage' } })));
+    expect(refused.every((result) => result.status === 'rejected')).toBe(true);
+    expect((await connect({ auth: { token: accessToken } })).connected).toBe(true);
+  });
+});
+
+describe('Realtime subscriptions: who may watch a party', () => {
+  it('lets any logged-in user watch a public party', async () => {
+    const owner = await account();
+    const stranger = await account();
+    const id = await party(owner.accessToken);
+    const socket = await connect({ auth: { token: stranger.accessToken } });
+
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    expect(watchers(id)).toBe(1);
+  });
+
+  it('lets the owner watch their private party', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken, 'PRIVATE');
+    const socket = await connect({ auth: { token: owner.accessToken } });
+
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    expect(watchers(id)).toBe(1);
+  });
+
+  it('refuses a private party to someone who is not invited', async () => {
+    const owner = await account();
+    const stranger = await account();
+    const id = await party(owner.accessToken, 'PRIVATE');
+    const socket = await connect({ auth: { token: stranger.accessToken } });
+
+    expect(await watch(socket, id)).toEqual(refusal('FORBIDDEN'));
+    expect(watchers(id)).toBe(0);
+  });
+
+  it('follows an invitation through its whole life: pending, accepted, revoked', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await party(owner.accessToken, 'PRIVATE');
+    const socket = await connect({ auth: { token: guest.accessToken } });
+    expect(await watch(socket, id)).toEqual(refusal('FORBIDDEN'));
+
+    const invitation = await request('POST', `/parties/${id}/invite`, { userId: guest.id }, owner.accessToken);
+    expect(invitation.status).toBe(201);
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    expect(await send(socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+
+    expect((await request('POST', `/invitations/${invitation.body.id}/accept`, {}, guest.accessToken)).status).toBe(201);
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    expect(await send(socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+
+    expect((await request('DELETE', `/parties/${id}/invitations/${guest.id}`, undefined, owner.accessToken)).status).toBe(200);
+    expect(await watch(socket, id)).toEqual(refusal('FORBIDDEN'));
+    expect(watchers(id)).toBe(0);
+  });
+
+  it('refuses a private party after the invitation was declined', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await party(owner.accessToken, 'PRIVATE');
+    const invitation = await request('POST', `/parties/${id}/invite`, { userId: guest.id }, owner.accessToken);
+    expect((await request('POST', `/invitations/${invitation.body.id}/decline`, {}, guest.accessToken)).status).toBe(201);
+    const socket = await connect({ auth: { token: guest.accessToken } });
+
+    expect(await watch(socket, id)).toEqual(refusal('FORBIDDEN'));
+  });
+
+  it('answers NOT_FOUND for a party that does not exist', async () => {
+    const { accessToken } = await account();
+    const socket = await connect({ auth: { token: accessToken } });
+
+    expect(await watch(socket, randomUUID())).toEqual(refusal('NOT_FOUND'));
+  });
+});
+
+describe('Realtime subscriptions: what a client may send', () => {
+  const id = randomUUID();
+
+  it.each([
+    ['nothing', []],
+    ['null', [null]],
+    ['a string', ['party']],
+    ['a number', [42]],
+    ['a list', [[{ type: 'party', id }]]],
+    ['an empty object', [{}]],
+    ['no id', [{ type: 'party' }]],
+    ['no type', [{ id }]],
+    ['a type that cannot be watched', [{ type: 'user', id }]],
+    ['a type that is not text', [{ type: ['party'], id }]],
+    ['an id that is not a UUID', [{ type: 'party', id: 'abc' }]],
+    ['an id that is not text', [{ type: 'party', id: { $ne: null } }]],
+    ['an extra field', [{ type: 'party', id, admin: true }]],
+    ['two arguments', [{ type: 'party', id }, { type: 'party', id }]],
+  ])('refuses %s with BAD_REQUEST, for subscribe and unsubscribe', async (_label, args) => {
+    const { accessToken } = await account();
+    const socket = await connect({ auth: { token: accessToken } });
+
+    expect(await send(socket, 'subscribe', ...args)).toEqual(refusal('BAD_REQUEST'));
+    expect(await send(socket, 'unsubscribe', ...args)).toEqual(refusal('BAD_REQUEST'));
+    expect(socket.connected).toBe(true);
+  });
+
+  it('stays connected and usable after messages it does not understand', async () => {
+    const owner = await account();
+    const partyId = await party(owner.accessToken);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+
+    socket.emit('subscribe');
+    socket.emit('no-such-event', { anything: true });
+    socket.emit('subscribe', 'x'.repeat(2000));
+
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+  });
+});
+
+describe('Realtime subscriptions: joining and leaving', () => {
+  it('counts a repeated subscription once', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    expect(watchers(id)).toBe(1);
+  });
+
+  it('keeps two connections of the same user separate', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const phone = await connect({ auth: { token: owner.accessToken } });
+    const tablet = await connect({ auth: { token: owner.accessToken } });
+
+    await watch(phone, id);
+    await watch(tablet, id);
+    expect(watchers(id)).toBe(2);
+    await send(phone, 'unsubscribe', { type: 'party', id });
+    expect(watchers(id)).toBe(1);
+  });
+
+  it('unsubscribes, and accepts an unsubscribe from a party it was not watching', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+    await watch(socket, id);
+
+    expect(await send(socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+    expect(watchers(id)).toBe(0);
+    expect(await send(socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+    expect(await send(socket, 'unsubscribe', { type: 'party', id: randomUUID() })).toEqual({ ok: true });
+  });
+
+  it('leaves every room when the connection closes', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+    await watch(socket, id);
+    expect(watchers(id)).toBe(1);
+
+    socket.disconnect();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(watchers(id)).toBe(0);
+  });
+
+  it('leaves no trace when the client disconnects while its subscription is being checked', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+
+    socket.emit('subscribe', { type: 'party', id });
+    socket.disconnect();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(watchers(id)).toBe(0);
+  });
+
+  it('allows 20 subscriptions per connection, refuses the 21st, and frees a place on unsubscribe', async () => {
+    const owner = await account();
+    const ids: string[] = [];
+    for (let i = 0; i < 21; i++) ids.push(await party(owner.accessToken));
+    const socket = await connect({ auth: { token: owner.accessToken } });
+
+    for (const id of ids.slice(0, 20)) expect(await watch(socket, id)).toEqual({ ok: true });
+    expect(await watch(socket, ids[20])).toEqual(refusal('TOO_MANY'));
+    expect(await watch(socket, ids[0])).toEqual({ ok: true });
+
+    expect(await send(socket, 'unsubscribe', { type: 'party', id: ids[0] })).toEqual({ ok: true });
+    expect(await watch(socket, ids[20])).toEqual({ ok: true });
+  });
+
+  it('holds the limit when many subscriptions arrive at the same moment', async () => {
+    const owner = await account();
+    const ids: string[] = [];
+    for (let i = 0; i < 25; i++) ids.push(await party(owner.accessToken));
+    const socket = await connect({ auth: { token: owner.accessToken } });
+
+    const answers = await Promise.all(ids.map((id) => watch(socket, id)));
+
+    expect(answers.filter((answer) => answer.ok)).toHaveLength(20);
+    expect(answers.filter((answer) => !answer.ok)).toEqual(Array(5).fill(refusal('TOO_MANY')));
+    expect(ids.reduce((total, id) => total + watchers(id), 0)).toBe(20);
+  });
+});
+
+describe('Realtime subscriptions: a logout reaches an open connection', () => {
+  it('refuses a subscription after logout and closes the connection', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+    const events: string[] = [];
+    socket.on('session:expired', () => events.push('session:expired'));
+    const closed = new Promise((resolve) => socket.once('disconnect', resolve));
+
+    expect((await request('POST', '/auth/logout', {}, owner.accessToken)).status).toBe(201);
+
+    expect(await watch(socket, id)).toEqual(refusal('UNAUTHORIZED'));
+    expect(await closed).toBe('io server disconnect');
+    expect(events).toEqual(['session:expired']);
+    expect(watchers(id)).toBe(0);
+  });
+
+  it('does not disturb another user when someone logs out', async () => {
+    const leaving = await account();
+    const staying = await account();
+    const id = await party(staying.accessToken);
+    const socket = await connect({ auth: { token: staying.accessToken } });
+
+    expect((await request('POST', '/auth/logout', {}, leaving.accessToken)).status).toBe(201);
+
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    expect(socket.connected).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------
+// Party snapshots
+// -----------------------------------------------------------------
+type Snapshot = {
+  party: { id: string; playbackVersion: number; nowPlaying: { id: string } | null };
+  queue: { id: string; songId: string; voteCount: number }[];
+  queueLength: number;
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Waits until `condition` holds, checking every 10 ms (fails after 3 s)
+async function until(condition: () => boolean) {
+  const deadline = Date.now() + 3000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('Timed out waiting for the condition');
+    await sleep(10);
+  }
+}
+
+// Every snapshot a connection receives, in the order they arrive
+function record(socket: Socket): Snapshot[] {
+  const received: Snapshot[] = [];
+  socket.on('party:snapshot', (snapshot: Snapshot) => received.push(snapshot));
+  return received;
+}
+
+// A connection watching a party, once it has received the snapshot sent on subscribing
+async function watcher(token: string, id: string) {
+  const socket = await connect({ auth: { token } });
+  const received = record(socket);
+  expect(await watch(socket, id)).toEqual({ ok: true });
+  await until(() => received.length === 1);
+  return { socket, received, last: () => received[received.length - 1] };
+}
+
+let lastTrack = 5000;
+const track = () => String(lastTrack++); // a Deezer id no other test used
+
+const suggest = (id: string, externalId: string, token: string) =>
+  request('POST', `/parties/${id}/songs`, { externalId }, token);
+const vote = (id: string, entryId: string, token: string) =>
+  request('POST', `/parties/${id}/songs/${entryId}/vote`, {}, token);
+const unvote = (id: string, entryId: string, token: string) =>
+  request('DELETE', `/parties/${id}/songs/${entryId}/vote`, undefined, token);
+const next = (id: string, token: string, expectedPlaybackVersion: number) =>
+  request('POST', `/parties/${id}/next`, { expectedPlaybackVersion }, token);
+
+// A public party with `count` songs suggested by its owner; returns the queue entry ids in order
+async function partyWithSongs(ownerToken: string, count: number) {
+  const id = await party(ownerToken);
+  const entries: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const suggested = await suggest(id, track(), ownerToken);
+    expect(suggested.status).toBe(201);
+    entries.push(suggested.body.id);
+  }
+  return { id, entries };
+}
+
+// What the REST routes show for a party right now: a snapshot must hold exactly this
+async function restView(id: string, token: string) {
+  const party = (await request('GET', `/parties/${id}`, undefined, token)).body;
+  const queue = (await request('GET', `/parties/${id}/queue?limit=100`, undefined, token)).body;
+  return { party, queue };
+}
+const shown = ({ party, queue }: Snapshot) => ({ party, queue });
+
+// Counts the snapshot reads of one party (the reads still happen normally)
+function countReads(id: string) {
+  const reads = jest.spyOn(app.get(PartiesService), 'snapshot');
+  spies.push(reads);
+  return () => reads.mock.calls.filter(([partyId]) => partyId === id).length;
+}
+
+// Makes the first snapshot read of a party wait, once it has read the database, until `release()`.
+// `read` resolves at that moment, so a test can change things while that snapshot is on its way.
+function holdNextRead(id: string) {
+  const parties = app.get(PartiesService);
+  const original = PartiesService.prototype.snapshot.bind(parties);
+  let release!: () => void;
+  let readDone!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  const read = new Promise<void>((resolve) => (readDone = resolve));
+  let held = false;
+  spies.push(jest.spyOn(parties, 'snapshot').mockImplementation(async (partyId: string) => {
+    const snapshot = await original(partyId);
+    if (partyId !== id || held) return snapshot;
+    held = true;
+    readDone();
+    await released;
+    return snapshot;
+  }));
+  return { read, release };
+}
+
+// Makes the first snapshot read of a party fail, like a database error would
+function failNextRead(id: string) {
+  const parties = app.get(PartiesService);
+  const original = PartiesService.prototype.snapshot.bind(parties);
+  let failed = false;
+  spies.push(jest.spyOn(parties, 'snapshot').mockImplementation(async (partyId: string) => {
+    if (partyId !== id || failed) return original(partyId);
+    failed = true;
+    throw new Error('database busy');
+  }));
+}
+
+// The snapshot errors the gateway logged (the logger prints nothing in tests)
+function loggedErrors() {
+  const errors = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+  spies.push(errors);
+  return () => errors.mock.calls.map(([message]) => String(message)).filter((message) => message.startsWith('Snapshot of'));
+}
+
+describe('Party snapshots: what watchers receive', () => {
+  it('sends the current snapshot on subscribing: the same data as GET /parties/:id and GET /queue', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 2);
+    expect((await vote(id, entries[1], owner.accessToken)).status).toBe(201);
+
+    const { received } = await watcher(owner.accessToken, id);
+
+    expect(shown(received[0])).toEqual(await restView(id, owner.accessToken));
+    expect(received[0].queue.map((entry) => entry.id)).toEqual([entries[1], entries[0]]);
+    expect(received[0].queueLength).toBe(2);
+  });
+
+  it('sends every change to everyone watching, with exactly what the REST routes then show', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await party(owner.accessToken);
+    const host = await watcher(owner.accessToken, id);
+    const listener = await watcher(guest.accessToken, id);
+    const bothReceived = async (count: number) => {
+      await until(() => host.received.length === count && listener.received.length === count);
+      const view = await restView(id, owner.accessToken);
+      expect(shown(host.last())).toEqual(view);
+      expect(shown(listener.last())).toEqual(view);
+      return host.last();
+    };
+
+    const first = await suggest(id, track(), guest.accessToken);
+    expect(first.status).toBe(201);
+    expect((await bothReceived(2)).queue).toHaveLength(1);
+
+    const second = await suggest(id, track(), guest.accessToken);
+    expect((await bothReceived(3)).queueLength).toBe(2);
+
+    expect((await vote(id, second.body.id, guest.accessToken)).status).toBe(201);
+    expect((await bothReceived(4)).queue.map((entry) => entry.id)).toEqual([second.body.id, first.body.id]);
+
+    expect((await unvote(id, second.body.id, guest.accessToken)).status).toBe(200);
+    expect((await bothReceived(5)).queue.map((entry) => entry.voteCount)).toEqual([0, 0]);
+
+    expect((await next(id, owner.accessToken, 0)).status).toBe(201);
+    const played = await bothReceived(6);
+    expect(played.party.nowPlaying?.id).toBe(first.body.songId);
+    expect(played.party.playbackVersion).toBe(1);
+    expect(played.queue.map((entry) => entry.id)).toEqual([second.body.id]);
+  });
+
+  it('holds the first 100 queue entries in play order, and the real length of the queue', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const prisma = app.get(PrismaService);
+    const { partyPlaylistId } = await prisma.party.findUniqueOrThrow({ where: { id } });
+    const songs = Array.from({ length: 101 }, (_, i) => ({
+      id: randomUUID(), title: `Bulk ${i}`, artist: 'Test Artist', durationSec: 200, sourceUri: 'https://www.deezer.com',
+    }));
+    await prisma.song.createMany({ data: songs });
+    // Inserted together, so they share createdAt: the order falls back to votes, then id
+    await prisma.partySong.createMany({ data: songs.map((song, i) => ({ songId: song.id, partyPlaylistId, voteCount: i % 3 })) });
+
+    const { received } = await watcher(owner.accessToken, id);
+
+    expect(received[0].queue).toHaveLength(100);
+    expect(received[0].queueLength).toBe(101);
+    expect(received[0].queue).toEqual((await restView(id, owner.accessToken)).queue);
+  });
+
+  it('sends nothing for a refused request', async () => {
+    const owner = await account();
+    const stranger = await account();
+    const id = await party(owner.accessToken);
+    const externalId = track();
+    const entry = (await suggest(id, externalId, owner.accessToken)).body.id;
+    const { received } = await watcher(owner.accessToken, id);
+    expect((await vote(id, entry, owner.accessToken)).status).toBe(201);
+    await until(() => received.length === 2);
+
+    expect((await suggest(id, externalId, owner.accessToken)).status).toBe(409);
+    expect((await vote(id, entry, owner.accessToken)).status).toBe(409);
+    expect((await vote(id, randomUUID(), owner.accessToken)).status).toBe(404);
+    expect((await unvote(id, entry, stranger.accessToken)).status).toBe(404);
+    expect((await next(id, stranger.accessToken, 0)).status).toBe(403);
+    expect((await next(id, owner.accessToken, 7)).status).toBe(409);
+    await sleep(500);
+
+    expect(received).toHaveLength(2);
+  });
+
+  it('removes a vote only through its own party, so the right watchers are told', async () => {
+    const owner = await account();
+    const voter = await account();
+    const other = await party(owner.accessToken);
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const watchingOther = await watcher(owner.accessToken, other);
+    expect((await vote(id, entries[0], voter.accessToken)).status).toBe(201);
+    await until(() => watching.received.length === 2);
+
+    expect((await unvote(other, entries[0], voter.accessToken)).status).toBe(404);
+    expect((await restView(id, owner.accessToken)).queue[0].voteCount).toBe(1);
+
+    expect((await unvote(id, entries[0], voter.accessToken)).status).toBe(200);
+    await until(() => watching.received.length === 3);
+    expect(watching.last().queue[0].voteCount).toBe(0);
+    expect(watchingOther.received).toHaveLength(1);
+  });
+
+  it("sends a party's snapshots only to the connections watching it", async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const otherParty = await party(owner.accessToken);
+    const watching = await watcher(owner.accessToken, id);
+    const watchingOther = await watcher(owner.accessToken, otherParty);
+    const left = await watcher(owner.accessToken, id);
+    expect(await send(left.socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+    const idle = record(await connect({ auth: { token: owner.accessToken } }));
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => watching.received.length === 2);
+    await sleep(300);
+
+    expect(watchingOther.received).toHaveLength(1);
+    expect(left.received).toHaveLength(1);
+    expect(idle).toHaveLength(0);
+  });
+
+  it('sends the snapshot of a new subscription to that connection only', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await party(owner.accessToken);
+    const first = await watcher(owner.accessToken, id);
+
+    await watcher(guest.accessToken, id);
+    await sleep(400);
+
+    expect(first.received).toHaveLength(1);
+  });
+
+  it('sends the snapshot again on a repeated subscription, so a client can resynchronize', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const { socket, received } = await watcher(owner.accessToken, id);
+
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    await until(() => received.length === 2);
+  });
+
+  it('sends no snapshot after a refused subscription', async () => {
+    const owner = await account();
+    const stranger = await account();
+    const id = await party(owner.accessToken, 'PRIVATE');
+    const socket = await connect({ auth: { token: stranger.accessToken } });
+    const received = record(socket);
+
+    expect(await watch(socket, id)).toEqual(refusal('FORBIDDEN'));
+    await sleep(400);
+
+    expect(received).toHaveLength(0);
+  });
+});
+
+describe('Party snapshots: order, merging and failures', () => {
+  it('reads a snapshot as one consistent state, even when a change commits in the middle of the reads', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 2);
+    // Pause the snapshot of the subscription below right after it has read the party, and play
+    // the next song at that moment: that song leaves the queue and becomes the one playing
+    const prisma = app.get(PrismaService);
+    const transaction = prisma.$transaction.bind(prisma) as (...args: unknown[]) => Promise<unknown>;
+    let moved = false;
+    const pauseAfterPartyRead = (tx: Prisma.TransactionClient) => new Proxy(tx, {
+      get: (client, model) => model !== 'party' ? Reflect.get(client, model) : new Proxy(client.party, {
+        get: (delegate, method) => method !== 'findUniqueOrThrow' ? Reflect.get(delegate, method) : async (args: Prisma.PartyFindUniqueOrThrowArgs) => {
+          const found = await delegate.findUniqueOrThrow(args);
+          if (!moved && args.where.id === id) {
+            moved = true;
+            expect((await next(id, owner.accessToken, 0)).status).toBe(201);
+          }
+          return found;
+        },
+      }),
+    });
+    spies.push(jest.spyOn(prisma, '$transaction').mockImplementation(((work: unknown, options?: unknown) =>
+      typeof work === 'function' ? transaction((tx: Prisma.TransactionClient) => work(pauseAfterPartyRead(tx)), options) : transaction(work, options)
+    ) as never));
+
+    const { received } = await watcher(owner.accessToken, id);
+    await until(() => received.length === 2);
+
+    // Entirely before the change, then entirely after it: never the song gone from the queue but not playing
+    expect(moved).toBe(true);
+    expect(received[0].party).toMatchObject({ playbackVersion: 0, nowPlaying: null });
+    expect(received[0].queue.map((entry) => entry.id)).toEqual(entries);
+    expect(received[0].queueLength).toBe(2);
+    expect(received[1].party.playbackVersion).toBe(1);
+    expect(received[1].party.nowPlaying).not.toBeNull();
+    expect(received[1].queue.map((entry) => entry.id)).toEqual([entries[1]]);
+    expect(received[1].queueLength).toBe(1);
+  });
+
+  it('never lets a newer snapshot be overtaken by an older one that was slow to read', async () => {
+    const owner = await account();
+    const voter = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await held.read;
+    expect((await vote(id, entries[0], voter.accessToken)).status).toBe(201);
+    await sleep(400);
+    held.release();
+    await until(() => watching.received.length === 3);
+
+    expect(watching.received.map((snapshot) => snapshot.queue[0].voteCount)).toEqual([0, 1, 2]);
+  });
+
+  it('merges the changes made while a snapshot is on its way into one more snapshot', async () => {
+    const owner = await account();
+    const voters = [await account(), await account(), await account(), await account()];
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await held.read;
+    // The requests are answered while the snapshot is held: sending never slows a request down
+    for (const voter of voters) expect((await vote(id, entries[0], voter.accessToken)).status).toBe(201);
+    held.release();
+    await until(() => watching.received.length === 3);
+    await sleep(600);
+
+    expect(watching.received.map((snapshot) => snapshot.queue[0].voteCount)).toEqual([0, 1, 5]);
+  });
+
+  it('sends at most one snapshot per party every 200 ms', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 2);
+    const { socket, received } = await watcher(owner.accessToken, id);
+    const arrivals: number[] = [];
+    socket.on('party:snapshot', () => arrivals.push(Date.now()));
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => arrivals.length === 1);
+    expect((await vote(id, entries[1], owner.accessToken)).status).toBe(201);
+    await until(() => arrivals.length === 2);
+
+    expect(arrivals[1] - arrivals[0]).toBeGreaterThanOrEqual(190);
+    expect(received[received.length - 1].queue.map((entry) => entry.voteCount)).toEqual([1, 1]);
+  });
+
+  it('does not make a party wait for the snapshot of another one', async () => {
+    const owner = await account();
+    const slow = await partyWithSongs(owner.accessToken, 1);
+    const fast = await partyWithSongs(owner.accessToken, 1);
+    const watchingSlow = await watcher(owner.accessToken, slow.id);
+    const watchingFast = await watcher(owner.accessToken, fast.id);
+    const held = holdNextRead(slow.id);
+
+    expect((await vote(slow.id, slow.entries[0], owner.accessToken)).status).toBe(201);
+    await held.read;
+    expect((await vote(fast.id, fast.entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => watchingFast.received.length === 2);
+    expect(watchingSlow.received).toHaveLength(1);
+
+    held.release();
+    await until(() => watchingSlow.received.length === 2);
+  });
+
+  it('does not read a party that nobody watches', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const reads = countReads(id);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await sleep(400);
+    expect(reads()).toBe(0);
+
+    const { socket } = await watcher(owner.accessToken, id);
+    expect(reads()).toBe(1);
+    expect(await send(socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+    expect((await unvote(id, entries[0], owner.accessToken)).status).toBe(200);
+    await sleep(400);
+    expect(reads()).toBe(1);
+  });
+
+  it('sends nothing to a connection that unsubscribed or closed before its snapshot was read', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const errors = loggedErrors();
+    const held = holdNextRead(id);
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await held.read;
+
+    // Both subscribe while the room's snapshot is held, so theirs can only be read after it
+    const unsubscribed = await connect({ auth: { token: owner.accessToken } });
+    const closed = await connect({ auth: { token: owner.accessToken } });
+    const toUnsubscribed = record(unsubscribed);
+    const toClosed = record(closed);
+    expect(await watch(unsubscribed, id)).toEqual({ ok: true });
+    expect(await watch(closed, id)).toEqual({ ok: true });
+    expect(await send(unsubscribed, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+    closed.disconnect();
+    held.release();
+    await until(() => watching.received.length === 2);
+    await sleep(600);
+
+    expect(toUnsubscribed).toHaveLength(0);
+    expect(toClosed).toHaveLength(0);
+    expect(errors()).toEqual([]);
+  });
+
+  it('logs a failed read and tries again 1 s later, and the change itself still succeeds', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const errors = loggedErrors();
+    failNextRead(id);
+
+    const changedAt = Date.now();
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => watching.received.length === 2);
+
+    expect(Date.now() - changedAt).toBeGreaterThanOrEqual(950);
+    expect(watching.last().queue[0].voteCount).toBe(1);
+    expect(errors()).toEqual([`Snapshot of party:${id} failed: database busy`]);
+  });
+
+  it('also tries again when the snapshot of a new subscription fails', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    const errors = loggedErrors();
+    failNextRead(id);
+
+    const { received } = await watcher(owner.accessToken, id);
+
+    expect(received[0].party.id).toBe(id);
+    expect(errors()).toEqual([`Snapshot of party:${id} failed: database busy`]);
+  });
+});
+
+// -----------------------------------------------------------------
+// Party snapshots: who is still allowed to receive them
+// -----------------------------------------------------------------
+const PASSWORD = 'Test-password-123!';
+
+// What a connection is told besides snapshots: its removal from a party, or the end of its session
+function recordNotices(socket: Socket) {
+  const notices: unknown[][] = [];
+  socket.on('unsubscribed', (payload: unknown) => notices.push(['unsubscribed', payload]));
+  socket.on('session:expired', () => notices.push(['session:expired']));
+  return notices;
+}
+
+const invite = (id: string, userId: string, ownerToken: string) =>
+  request('POST', `/parties/${id}/invite`, { userId }, ownerToken);
+const revoke = (id: string, userId: string, ownerToken: string) =>
+  request('DELETE', `/parties/${id}/invitations/${userId}`, undefined, ownerToken);
+
+// A private party with one suggested song, its owner and a guest who is invited to it
+async function privateParty() {
+  const owner = await account();
+  const guest = await account();
+  const id = await party(owner.accessToken, 'PRIVATE');
+  const entry = (await suggest(id, track(), owner.accessToken)).body.id as string;
+  const invitation = await invite(id, guest.id, owner.accessToken);
+  expect(invitation.status).toBe(201);
+  return { owner, guest, id, entry, invitationId: invitation.body.id as string };
+}
+
+describe('Party snapshots: who is still allowed to receive them', () => {
+  it('stops sending to a connection whose session was logged out, and closes it', async () => {
+    const owner = await account();
+    const guest = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const staying = await watcher(owner.accessToken, id);
+    const leaving = await watcher(guest.accessToken, id);
+    const notices = recordNotices(leaving.socket);
+    const closed = new Promise((resolve) => leaving.socket.once('disconnect', resolve));
+    expect((await request('POST', '/auth/logout', {}, guest.accessToken)).status).toBe(201);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => staying.received.length === 2);
+
+    expect(await closed).toBe('io server disconnect');
+    expect(notices).toEqual([['session:expired']]);
+    expect(leaving.received).toHaveLength(1);
+    expect(watchers(id)).toBe(1);
+  });
+
+  it('closes only the connections of the session that ended, not the other devices of the same user', async () => {
+    const owner = await account();
+    const user = await account();
+    const tablet = await request('POST', '/auth/login', { email: user.email, password: PASSWORD });
+    expect(tablet.status).toBe(201);
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const onPhone = await watcher(user.accessToken, id);
+    const onTablet = await watcher(tablet.body.accessToken, id);
+    const phoneNotices = recordNotices(onPhone.socket);
+    const tabletNotices = recordNotices(onTablet.socket);
+    expect((await request('POST', '/auth/logout', {}, user.accessToken)).status).toBe(201);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => onTablet.received.length === 2 && phoneNotices.length === 1);
+
+    expect(phoneNotices).toEqual([['session:expired']]);
+    expect(onPhone.received).toHaveLength(1);
+    expect(tabletNotices).toEqual([]);
+    expect(onTablet.socket.connected).toBe(true);
+  });
+
+  it('closes every connection of a user whose refresh token was used twice', async () => {
+    const owner = await account();
+    const user = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(user.accessToken, id);
+    const notices = recordNotices(watching.socket);
+    expect((await request('POST', '/auth/refresh', { refreshToken: user.refreshToken })).status).toBe(201);
+    // The same token again looks like a stolen one: every session of the user is revoked
+    expect((await request('POST', '/auth/refresh', { refreshToken: user.refreshToken })).status).toBe(401);
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => notices.length === 1);
+
+    expect(notices).toEqual([['session:expired']]);
+    expect(watching.received).toHaveLength(1);
+  });
+
+  it('treats a session past its expiry date like a logout', async () => {
+    const owner = await account();
+    const user = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(user.accessToken, id);
+    const notices = recordNotices(watching.socket);
+    await app.get(PrismaService).authSession.updateMany({ where: { userId: user.id }, data: { expiresAt: new Date(Date.now() - 1000) } });
+
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => notices.length === 1);
+
+    expect(notices).toEqual([['session:expired']]);
+    expect(watching.received).toHaveLength(1);
+  });
+
+  it('removes a guest from the room as soon as the invitation is revoked, and lets them back after a new one', async () => {
+    const { owner, guest, id } = await privateParty();
+    const host = await watcher(owner.accessToken, id);
+    const invited = await watcher(guest.accessToken, id);
+    const notices = recordNotices(invited.socket);
+
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    await until(() => notices.length === 1);
+
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+    expect(invited.socket.connected).toBe(true);
+    expect(watchers(id)).toBe(1);
+
+    // What happens in the party afterwards reaches the owner only
+    const seenByHost = host.received.length;
+    expect((await suggest(id, track(), owner.accessToken)).status).toBe(201);
+    await until(() => host.received.length === seenByHost + 1);
+    await sleep(300);
+    expect(invited.received).toHaveLength(1);
+    expect(await watch(invited.socket, id)).toEqual(refusal('FORBIDDEN'));
+
+    expect((await invite(id, guest.id, owner.accessToken)).status).toBe(201);
+    expect(await watch(invited.socket, id)).toEqual({ ok: true });
+    await until(() => invited.received.length === 2);
+    expect(notices).toHaveLength(1);
+  });
+
+  it('removes a guest who declines the invitation while watching', async () => {
+    const { owner, guest, id, invitationId } = await privateParty();
+    const host = await watcher(owner.accessToken, id);
+    const invited = await watcher(guest.accessToken, id);
+    const notices = recordNotices(invited.socket);
+
+    expect((await request('POST', `/invitations/${invitationId}/decline`, {}, guest.accessToken)).status).toBe(201);
+    await until(() => notices.length === 1);
+
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+    expect(watchers(id)).toBe(1);
+    expect(host.socket.connected).toBe(true);
+  });
+
+  it('keeps a guest in the room when the invitation is accepted, and sends nothing for it', async () => {
+    const { owner, guest, id, entry, invitationId } = await privateParty();
+    const host = await watcher(owner.accessToken, id);
+    const invited = await watcher(guest.accessToken, id);
+    const notices = recordNotices(invited.socket);
+
+    expect((await request('POST', `/invitations/${invitationId}/accept`, {}, guest.accessToken)).status).toBe(201);
+    await sleep(500);
+    // Accepting changes nothing a watcher sees: no snapshot
+    expect(host.received).toHaveLength(1);
+    expect(invited.received).toHaveLength(1);
+
+    expect((await vote(id, entry, owner.accessToken)).status).toBe(201);
+    await until(() => invited.received.length === 2);
+    expect(notices).toEqual([]);
+    expect(invited.last().queue[0].voteCount).toBe(1);
+  });
+
+  it('keeps the other subscriptions of a guest removed from one party', async () => {
+    const { owner, guest, id } = await privateParty();
+    const open = await partyWithSongs(owner.accessToken, 1);
+    const invited = await watcher(guest.accessToken, id);
+    expect(await watch(invited.socket, open.id)).toEqual({ ok: true });
+    await until(() => invited.received.length === 2);
+    const notices = recordNotices(invited.socket);
+
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    await until(() => notices.length === 1);
+    expect((await vote(open.id, open.entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => invited.received.length === 3);
+
+    expect(invited.last().party.id).toBe(open.id);
+    expect(invited.last().queue[0].voteCount).toBe(1);
+    expect(watchers(open.id)).toBe(1);
+    expect(watchers(id)).toBe(0);
+  });
+
+  it('checks who receives a snapshot when it is sent, not when it was asked for', async () => {
+    const { owner, guest, id, entry } = await privateParty();
+    const host = await watcher(owner.accessToken, id);
+    const invited = await watcher(guest.accessToken, id);
+    const notices = recordNotices(invited.socket);
+    const held = holdNextRead(id);
+
+    expect((await vote(id, entry, owner.accessToken)).status).toBe(201);
+    await held.read;
+    // The guest loses access while that snapshot is on its way
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    held.release();
+    await until(() => host.received.length >= 2 && notices.length === 1);
+    await sleep(400);
+
+    expect(invited.received).toHaveLength(1);
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+  });
+
+  it('checks a new subscriber again when its first snapshot was delayed', async () => {
+    const { owner, guest, id } = await privateParty();
+    const host = await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+    expect((await suggest(id, track(), owner.accessToken)).status).toBe(201);
+    await held.read;
+
+    // Subscribes while the room's snapshot is held, then loses access before its own is read
+    const socket = await connect({ auth: { token: guest.accessToken } });
+    const received = record(socket);
+    const notices = recordNotices(socket);
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    held.release();
+    await until(() => host.received.length >= 2 && notices.length === 1);
+    await sleep(600);
+
+    expect(received).toHaveLength(0);
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+  });
+
+  it('checks any number of watchers with one question about sessions and one about invitations', async () => {
+    const { owner, id } = await privateParty();
+    const guests = [await account(), await account(), await account(), await account()];
+    for (const guest of guests) expect((await invite(id, guest.id, owner.accessToken)).status).toBe(201);
+    const everyone = [await watcher(owner.accessToken, id)];
+    for (const guest of guests) everyone.push(await watcher(guest.accessToken, id));
+    await sleep(300);
+    const sessionChecks = jest.spyOn(app.get(SessionsService), 'validSessionIds');
+    const viewerChecks = jest.spyOn(app.get(PartiesService), 'viewers');
+    spies.push(sessionChecks, viewerChecks);
+
+    expect((await suggest(id, track(), owner.accessToken)).status).toBe(201);
+    await until(() => everyone.every((watching) => watching.received.length === 2));
+
+    expect(sessionChecks.mock.calls.map(([ids]) => ids.length)).toEqual([5]);
+    // The request itself asks for its one user; the send asks once for the five watchers
+    expect(viewerChecks.mock.calls.map(([, ids]) => ids.length).sort()).toEqual([1, 5]);
+  });
+
+  it('sends nothing when the check itself fails, and tries again', async () => {
+    const owner = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    const errors = loggedErrors();
+    const sessions = app.get(SessionsService);
+    const original = SessionsService.prototype.validSessionIds.bind(sessions);
+    let failed = false;
+    spies.push(jest.spyOn(sessions, 'validSessionIds').mockImplementation(async (ids: string[]) => {
+      if (failed) return original(ids);
+      failed = true;
+      throw new Error('database busy');
+    }));
+
+    const changedAt = Date.now();
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => watching.received.length === 2);
+
+    expect(Date.now() - changedAt).toBeGreaterThanOrEqual(950);
+    expect(watching.last().queue[0].voteCount).toBe(1);
+    expect(errors()).toEqual([`Snapshot of party:${id} failed: database busy`]);
+  });
+});
+
+describe('Party snapshots: who is still allowed to receive them (edge cases)', () => {
+  it('gives no access to a private party through an invitation to another one', async () => {
+    const { guest } = await privateParty();
+    const otherOwner = await account();
+    const other = await party(otherOwner.accessToken, 'PRIVATE');
+    const socket = await connect({ auth: { token: guest.accessToken } });
+
+    expect(await watch(socket, other)).toEqual(refusal('FORBIDDEN'));
+    expect((await request('GET', `/parties/${other}`, undefined, guest.accessToken)).status).toBe(403);
+  });
+
+  it('sends no first snapshot to a new subscriber removed while it was being read', async () => {
+    const { owner, guest, id } = await privateParty();
+    await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+    const socket = await connect({ auth: { token: guest.accessToken } });
+    const received = record(socket);
+    const notices = recordNotices(socket);
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    await held.read;
+
+    // Nothing changed in the party: the snapshot being read is for the new subscriber alone
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    held.release();
+    await until(() => notices.length === 1);
+    await sleep(600);
+
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+    expect(received).toHaveLength(0);
+  });
+
+  it('checks a new subscriber whose session ended before its first snapshot', async () => {
+    const owner = await account();
+    const user = await account();
+    const id = await party(owner.accessToken);
+    await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+    const socket = await connect({ auth: { token: user.accessToken } });
+    const received = record(socket);
+    const notices = recordNotices(socket);
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    await held.read;
+
+    // Nothing changed in the party: this snapshot is for the new subscriber alone
+    expect((await request('POST', '/auth/logout', {}, user.accessToken)).status).toBe(201);
+    held.release();
+    await until(() => notices.length === 1);
+    await sleep(300);
+
+    expect(notices).toEqual([['session:expired']]);
+    expect(received).toHaveLength(0);
+    expect(watchers(id)).toBe(1);
+  });
+
+  it('asks the database nothing when nobody is left to receive the snapshot', async () => {
+    const owner = await account();
+    const id = await party(owner.accessToken);
+    await watcher(owner.accessToken, id);
+    const held = holdNextRead(id);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+    expect(await watch(socket, id)).toEqual({ ok: true });
+    await held.read;
+    expect(await send(socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+    const sessionChecks = jest.spyOn(app.get(SessionsService), 'validSessionIds');
+    spies.push(sessionChecks);
+
+    held.release();
+    await sleep(400);
+
+    expect(sessionChecks).not.toHaveBeenCalled();
+  });
+});
+
+// -----------------------------------------------------------------
+// Playlist snapshots
+// -----------------------------------------------------------------
+type PlaylistSnapshot = {
+  playlist: { id: string; name: string };
+  songs: { id: string; songId: string; position: number }[];
+  songsLength: number;
+};
+
+async function playlist(ownerToken: string, options: Record<string, unknown> = {}): Promise<string> {
+  const created = await request('POST', '/playlists', { name: 'Realtime test', ...options }, ownerToken);
+  expect(created.status).toBe(201);
+  return created.body.id;
+}
+
+const addSong = (id: string, token: string, extra: Record<string, unknown> = {}) =>
+  request('POST', `/playlists/${id}/songs`, { externalId: track(), ...extra }, token);
+const moveSong = (id: string, entryId: string, token: string, position: number, expectedPosition: number) =>
+  request('PATCH', `/playlists/${id}/songs/${entryId}`, { position, expectedPosition }, token);
+const removeSong = (id: string, entryId: string, token: string) =>
+  request('DELETE', `/playlists/${id}/songs/${entryId}`, undefined, token);
+
+const watchPlaylist = (socket: Socket, id: string) => send(socket, 'subscribe', { type: 'playlist', id });
+const playlistWatchers = (id: string) => app.get(RealtimeGateway).server.sockets.adapter.rooms.get(`playlist:${id}`)?.size ?? 0;
+
+// Every playlist snapshot a connection receives, in the order they arrive
+function recordPlaylist(socket: Socket): PlaylistSnapshot[] {
+  const received: PlaylistSnapshot[] = [];
+  socket.on('playlist:snapshot', (snapshot: PlaylistSnapshot) => received.push(snapshot));
+  return received;
+}
+
+// A connection watching a playlist, once it has received the snapshot sent on subscribing
+async function playlistWatcher(token: string, id: string) {
+  const socket = await connect({ auth: { token } });
+  const received = recordPlaylist(socket);
+  expect(await watchPlaylist(socket, id)).toEqual({ ok: true });
+  await until(() => received.length === 1);
+  return { socket, received, last: () => received[received.length - 1] };
+}
+
+// What the REST routes show for a playlist right now: a snapshot must hold exactly this
+async function playlistRestView(id: string, token: string) {
+  const playlist = (await request('GET', `/playlists/${id}`, undefined, token)).body;
+  const songs = (await request('GET', `/playlists/${id}/songs?limit=100`, undefined, token)).body;
+  return { playlist, songs };
+}
+const shownPlaylist = ({ playlist, songs }: PlaylistSnapshot) => ({ playlist, songs });
+
+// A private playlist with one song, its owner and a guest who is invited to it
+async function privatePlaylist() {
+  const owner = await account();
+  const guest = await account();
+  const id = await playlist(owner.accessToken, { visibility: 'PRIVATE' });
+  const entry = (await addSong(id, owner.accessToken)).body as { id: string; position: number };
+  const invitation = await request('POST', `/playlists/${id}/invite`, { userId: guest.id }, owner.accessToken);
+  expect(invitation.status).toBe(201);
+  return { owner, guest, id, entry, invitationId: invitation.body.id as string };
+}
+
+describe('Playlist snapshots: who may watch a playlist', () => {
+  it('lets any logged-in user watch a public playlist, and its owner a private one', async () => {
+    const owner = await account();
+    const stranger = await account();
+    const open = await playlist(owner.accessToken);
+    const closed = await playlist(owner.accessToken, { visibility: 'PRIVATE' });
+
+    expect(await watchPlaylist(await connect({ auth: { token: stranger.accessToken } }), open)).toEqual({ ok: true });
+    expect(await watchPlaylist(await connect({ auth: { token: owner.accessToken } }), closed)).toEqual({ ok: true });
+    expect(playlistWatchers(open)).toBe(1);
+    expect(playlistWatchers(closed)).toBe(1);
+  });
+
+  it('refuses a private playlist to someone who is not invited, and accepts them once invited', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await playlist(owner.accessToken, { visibility: 'PRIVATE' });
+    const socket = await connect({ auth: { token: guest.accessToken } });
+
+    expect(await watchPlaylist(socket, id)).toEqual(refusal('FORBIDDEN'));
+    expect(playlistWatchers(id)).toBe(0);
+
+    expect((await request('POST', `/playlists/${id}/invite`, { userId: guest.id }, owner.accessToken)).status).toBe(201);
+    expect(await watchPlaylist(socket, id)).toEqual({ ok: true });
+  });
+
+  it('answers NOT_FOUND for a playlist that does not exist, and for a party id used as a playlist', async () => {
+    const owner = await account();
+    const partyId = await party(owner.accessToken);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+
+    expect(await watchPlaylist(socket, randomUUID())).toEqual(refusal('NOT_FOUND'));
+    expect(await watchPlaylist(socket, partyId)).toEqual(refusal('NOT_FOUND'));
+  });
+
+  it('gives no access to a private playlist through an invitation to another one', async () => {
+    const { guest } = await privatePlaylist();
+    const otherOwner = await account();
+    const other = await playlist(otherOwner.accessToken, { visibility: 'PRIVATE' });
+    const socket = await connect({ auth: { token: guest.accessToken } });
+
+    expect(await watchPlaylist(socket, other)).toEqual(refusal('FORBIDDEN'));
+    expect((await request('GET', `/playlists/${other}`, undefined, guest.accessToken)).status).toBe(403);
+  });
+});
+
+describe('Playlist snapshots: what watchers receive', () => {
+  it('sends the current snapshot on subscribing: the same data as GET /playlists/:id and GET /songs', async () => {
+    const owner = await account();
+    const id = await playlist(owner.accessToken);
+    const last = (await addSong(id, owner.accessToken)).body.id;
+    const first = (await addSong(id, owner.accessToken, { position: 0.5 })).body.id;
+
+    const { received } = await playlistWatcher(owner.accessToken, id);
+
+    expect(shownPlaylist(received[0])).toEqual(await playlistRestView(id, owner.accessToken));
+    expect(received[0].songs.map((entry) => entry.id)).toEqual([first, last]);
+    expect(received[0].songsLength).toBe(2);
+  });
+
+  it('sends every change to everyone watching, with exactly what the REST routes then show', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await playlist(owner.accessToken);
+    const one = await playlistWatcher(owner.accessToken, id);
+    const two = await playlistWatcher(guest.accessToken, id);
+    const bothReceived = async (count: number) => {
+      await until(() => one.received.length === count && two.received.length === count);
+      const view = await playlistRestView(id, owner.accessToken);
+      expect(shownPlaylist(one.last())).toEqual(view);
+      expect(shownPlaylist(two.last())).toEqual(view);
+      return one.last();
+    };
+
+    const a = await addSong(id, guest.accessToken);
+    expect(a.status).toBe(201);
+    expect((await bothReceived(2)).songs.map((entry) => entry.id)).toEqual([a.body.id]);
+
+    const b = await addSong(id, owner.accessToken);
+    expect((await bothReceived(3)).songsLength).toBe(2);
+
+    expect((await moveSong(id, b.body.id, guest.accessToken, 0.5, b.body.position)).status).toBe(200);
+    expect((await bothReceived(4)).songs.map((entry) => entry.id)).toEqual([b.body.id, a.body.id]);
+
+    expect((await removeSong(id, a.body.id, owner.accessToken)).status).toBe(200);
+    const end = await bothReceived(5);
+    expect(end.songs.map((entry) => entry.id)).toEqual([b.body.id]);
+    expect(end.songsLength).toBe(1);
+  });
+
+  it('holds the first 100 songs in order, and the real number of songs', async () => {
+    const owner = await account();
+    const id = await playlist(owner.accessToken);
+    const prisma = app.get(PrismaService);
+    const songs = Array.from({ length: 101 }, (_, i) => ({
+      id: randomUUID(), title: `Bulk ${i}`, artist: 'Test Artist', durationSec: 200, sourceUri: 'https://www.deezer.com',
+    }));
+    await prisma.song.createMany({ data: songs });
+    // Many songs share a position: the order falls back to the id
+    await prisma.playlistSong.createMany({ data: songs.map((song, i) => ({ songId: song.id, playlistId: id, position: i % 4, addedById: owner.id })) });
+
+    const { received } = await playlistWatcher(owner.accessToken, id);
+
+    expect(received[0].songs).toHaveLength(100);
+    expect(received[0].songsLength).toBe(101);
+    expect(received[0].songs).toEqual((await playlistRestView(id, owner.accessToken)).songs);
+  });
+
+  it('sends nothing for a refused request', async () => {
+    const owner = await account();
+    const visitor = await account();
+    const id = await playlist(owner.accessToken, { editLicense: 'INVITED_ONLY' });
+    const externalId = track();
+    const entry = (await request('POST', `/playlists/${id}/songs`, { externalId }, owner.accessToken)).body;
+    const { received } = await playlistWatcher(owner.accessToken, id);
+    expect((await moveSong(id, entry.id, owner.accessToken, 5, entry.position)).status).toBe(200);
+    await until(() => received.length === 2);
+
+    expect((await request('POST', `/playlists/${id}/songs`, { externalId }, owner.accessToken)).status).toBe(409);
+    expect((await moveSong(id, entry.id, owner.accessToken, 9, entry.position)).status).toBe(409);
+    expect((await moveSong(id, randomUUID(), owner.accessToken, 9, 1)).status).toBe(404);
+    expect((await removeSong(id, randomUUID(), owner.accessToken)).status).toBe(404);
+    expect((await addSong(id, visitor.accessToken)).status).toBe(403);
+    expect((await removeSong(id, entry.id, visitor.accessToken)).status).toBe(403);
+    await sleep(500);
+
+    expect(received).toHaveLength(2);
+  });
+
+  it('ends on the true state after several simultaneous moves of the same song', async () => {
+    const owner = await account();
+    const id = await playlist(owner.accessToken);
+    const entry = (await addSong(id, owner.accessToken)).body;
+    const { received, last } = await playlistWatcher(owner.accessToken, id);
+
+    const answers = await Promise.all([10, 20, 30, 40].map((position) => moveSong(id, entry.id, owner.accessToken, position, entry.position)));
+    const winner = answers.find((answer) => answer.status === 200)!;
+    await until(() => received.length >= 2);
+    await sleep(500);
+
+    expect(answers.filter((answer) => answer.status === 200)).toHaveLength(1);
+    expect(last().songs).toMatchObject([{ id: entry.id, position: winner.body.position }]);
+    expect(shownPlaylist(last())).toEqual(await playlistRestView(id, owner.accessToken));
+  });
+
+  it('reads a snapshot as one consistent state, even when a change commits in the middle of the reads', async () => {
+    const owner = await account();
+    const id = await playlist(owner.accessToken);
+    const kept = (await addSong(id, owner.accessToken)).body.id;
+    const removed = (await addSong(id, owner.accessToken)).body.id;
+    // Pause the snapshot of the subscription below right after it has read the playlist, and
+    // remove a song at that moment
+    const prisma = app.get(PrismaService);
+    const transaction = prisma.$transaction.bind(prisma) as (...args: unknown[]) => Promise<unknown>;
+    let changed = false;
+    const pauseAfterPlaylistRead = (tx: Prisma.TransactionClient) => new Proxy(tx, {
+      get: (client, model) => model !== 'playlist' ? Reflect.get(client, model) : new Proxy(client.playlist, {
+        get: (delegate, method) => method !== 'findUniqueOrThrow' ? Reflect.get(delegate, method) : async (args: Prisma.PlaylistFindUniqueOrThrowArgs) => {
+          const found = await delegate.findUniqueOrThrow(args);
+          if (!changed && args.where.id === id) {
+            changed = true;
+            expect((await removeSong(id, removed, owner.accessToken)).status).toBe(200);
+          }
+          return found;
+        },
+      }),
+    });
+    spies.push(jest.spyOn(prisma, '$transaction').mockImplementation(((work: unknown, options?: unknown) =>
+      typeof work === 'function' ? transaction((tx: Prisma.TransactionClient) => work(pauseAfterPlaylistRead(tx)), options) : transaction(work, options)
+    ) as never));
+
+    const { received } = await playlistWatcher(owner.accessToken, id);
+    await until(() => received.length === 2);
+
+    // Entirely before the removal, then entirely after it: never a list and a length that disagree
+    expect(changed).toBe(true);
+    expect(received[0].songs.map((entry) => entry.id)).toEqual([kept, removed]);
+    expect(received[0].songsLength).toBe(2);
+    expect(received[1].songs.map((entry) => entry.id)).toEqual([kept]);
+    expect(received[1].songsLength).toBe(1);
+  });
+
+  it('does not read a playlist that nobody watches', async () => {
+    const owner = await account();
+    const id = await playlist(owner.accessToken);
+    const reads = jest.spyOn(app.get(PlaylistsService), 'snapshot');
+    spies.push(reads);
+
+    expect((await addSong(id, owner.accessToken)).status).toBe(201);
+    await sleep(400);
+
+    expect(reads.mock.calls.filter(([playlistId]) => playlistId === id)).toHaveLength(0);
+  });
+});
+
+describe('Playlist snapshots: who is still allowed to receive them', () => {
+  it('removes a guest from the room as soon as the invitation is revoked', async () => {
+    const { owner, guest, id } = await privatePlaylist();
+    const host = await playlistWatcher(owner.accessToken, id);
+    const invited = await playlistWatcher(guest.accessToken, id);
+    const notices = recordNotices(invited.socket);
+
+    expect((await request('DELETE', `/playlists/${id}/invitations/${guest.id}`, undefined, owner.accessToken)).status).toBe(200);
+    await until(() => notices.length === 1);
+
+    expect(notices).toEqual([['unsubscribed', { type: 'playlist', id, code: 'FORBIDDEN' }]]);
+    expect(invited.socket.connected).toBe(true);
+    expect(playlistWatchers(id)).toBe(1);
+
+    const seenByHost = host.received.length;
+    expect((await addSong(id, owner.accessToken)).status).toBe(201);
+    await until(() => host.received.length === seenByHost + 1);
+    await sleep(300);
+    expect(invited.received).toHaveLength(1);
+  });
+
+  it('removes a guest who declines the invitation while watching, and sends nothing when they accept', async () => {
+    const declining = await privatePlaylist();
+    const invited = await playlistWatcher(declining.guest.accessToken, declining.id);
+    const notices = recordNotices(invited.socket);
+    expect((await request('POST', `/invitations/${declining.invitationId}/decline`, {}, declining.guest.accessToken)).status).toBe(201);
+    await until(() => notices.length === 1);
+    expect(notices).toEqual([['unsubscribed', { type: 'playlist', id: declining.id, code: 'FORBIDDEN' }]]);
+
+    const accepting = await privatePlaylist();
+    const host = await playlistWatcher(accepting.owner.accessToken, accepting.id);
+    const staying = await playlistWatcher(accepting.guest.accessToken, accepting.id);
+    const stayingNotices = recordNotices(staying.socket);
+    expect((await request('POST', `/invitations/${accepting.invitationId}/accept`, {}, accepting.guest.accessToken)).status).toBe(201);
+    await sleep(500);
+    expect(host.received).toHaveLength(1);
+    expect(staying.received).toHaveLength(1);
+    expect(stayingNotices).toEqual([]);
+  });
+
+  it('closes a connection whose session was logged out, at the next playlist snapshot', async () => {
+    const owner = await account();
+    const guest = await account();
+    const id = await playlist(owner.accessToken);
+    const staying = await playlistWatcher(owner.accessToken, id);
+    const leaving = await playlistWatcher(guest.accessToken, id);
+    const notices = recordNotices(leaving.socket);
+    expect((await request('POST', '/auth/logout', {}, guest.accessToken)).status).toBe(201);
+
+    expect((await addSong(id, owner.accessToken)).status).toBe(201);
+    await until(() => staying.received.length === 2 && notices.length === 1);
+
+    expect(notices).toEqual([['session:expired']]);
+    expect(leaving.received).toHaveLength(1);
+    expect(playlistWatchers(id)).toBe(1);
+  });
+});
+
+describe('Parties and playlists on the same connection', () => {
+  it('keeps the two kinds apart: each change reaches the watchers of that party or playlist only', async () => {
+    const owner = await account();
+    const { id: partyId, entries } = await partyWithSongs(owner.accessToken, 1);
+    const playlistId = await playlist(owner.accessToken);
+    const socket = await connect({ auth: { token: owner.accessToken } });
+    const parties = record(socket);
+    const playlists = recordPlaylist(socket);
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+    expect(await watchPlaylist(socket, playlistId)).toEqual({ ok: true });
+    await until(() => parties.length === 1 && playlists.length === 1);
+
+    expect((await addSong(playlistId, owner.accessToken)).status).toBe(201);
+    await until(() => playlists.length === 2);
+    await sleep(300);
+    expect(parties).toHaveLength(1);
+
+    expect((await vote(partyId, entries[0], owner.accessToken)).status).toBe(201);
+    await until(() => parties.length === 2);
+    await sleep(300);
+    expect(playlists).toHaveLength(2);
+  });
+
+  it('counts parties and playlists together in the limit of 20 subscriptions', async () => {
+    const owner = await account();
+    const socket = await connect({ auth: { token: owner.accessToken } });
+    for (let i = 0; i < 10; i++) {
+      expect(await watch(socket, await party(owner.accessToken))).toEqual({ ok: true });
+      expect(await watchPlaylist(socket, await playlist(owner.accessToken))).toEqual({ ok: true });
+    }
+
+    expect(await watchPlaylist(socket, await playlist(owner.accessToken))).toEqual(refusal('TOO_MANY'));
+    expect(await watch(socket, await party(owner.accessToken))).toEqual(refusal('TOO_MANY'));
+  });
+});
+
+// -----------------------------------------------------------------
+// Limits and action logs of the socket
+// -----------------------------------------------------------------
+type LoggedAction = { action: string; deviceId: string | null; platform: string | null; appVersion: string | null; metadata: unknown };
+
+async function registerDevice(token: string): Promise<string> {
+  const device = await request('POST', '/devices', { platform: 'ANDROID', model: 'Pixel 8', appVersion: '1.2.0' }, token);
+  expect(device.status).toBe(201);
+  return device.body.id;
+}
+
+// The socket actions logged for a user, oldest first, once there are `count` of them (fails after 3 s)
+async function socketLogs(userId: string, count: number): Promise<LoggedAction[]> {
+  const read = () => app.get(PrismaService).actionLog.findMany({
+    where: { userId, action: { startsWith: 'WS ' } },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    select: { action: true, deviceId: true, platform: true, appVersion: true, metadata: true },
+  });
+  const deadline = Date.now() + 3000;
+  let logs = await read();
+  while (logs.length < count) {
+    if (Date.now() > deadline) throw new Error(`Expected ${count} socket logs, found ${logs.length}`);
+    await sleep(20);
+    logs = await read();
+  }
+  return logs;
+}
+const actions = (logs: LoggedAction[]) => logs.map((log) => log.action).sort();
+
+// How many connections the server currently holds for one user
+const connectionsOf = (userId: string) =>
+  [...app.get(RealtimeGateway).server.sockets.sockets.values()].filter((socket) => socket.data.userId === userId).length;
+
+// Opens a connection and records what the server tells it from the very first moment
+function opening(token: string) {
+  const socket = io(base, { transports: ['websocket'], reconnection: false, forceNew: true, auth: { token } });
+  sockets.push(socket);
+  const told: unknown[][] = [];
+  socket.on('connection:refused', (payload: unknown) => told.push(['connection:refused', payload]));
+  socket.on('disconnect', (reason: string) => told.push(['disconnect', reason]));
+  return { socket, told };
+}
+
+describe('Realtime action logs: every socket action is logged like an HTTP one', () => {
+  it.each([
+    ['the handshake auth object', (token: string, deviceId: string) => ({ auth: { token, deviceId } })],
+    ['an X-Device-Id header', (token: string, deviceId: string) => ({ auth: { token }, extraHeaders: { 'X-Device-Id': deviceId } })],
+  ])('logs the connection and each message with the device named in %s', async (_label, options) => {
+    const user = await account();
+    const deviceId = await registerDevice(user.accessToken);
+    const partyId = await party(user.accessToken);
+    const playlistId = await playlist(user.accessToken);
+    const socket = await connect(options(user.accessToken, deviceId));
+
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+    expect(await send(socket, 'unsubscribe', { type: 'party', id: partyId })).toEqual({ ok: true });
+    expect(await watchPlaylist(socket, playlistId)).toEqual({ ok: true });
+
+    const logs = await socketLogs(user.id, 4);
+    expect(actions(logs)).toEqual(['WS connect', 'WS subscribe party', 'WS subscribe playlist', 'WS unsubscribe party']);
+    for (const log of logs) expect(log).toMatchObject({ deviceId, platform: 'ANDROID', appVersion: '1.2.0', metadata: null });
+  });
+
+  it('logs a refused message with the reason', async () => {
+    const owner = await account();
+    const stranger = await account();
+    const closed = await party(owner.accessToken, 'PRIVATE');
+    const socket = await connect({ auth: { token: stranger.accessToken } });
+
+    expect(await watch(socket, closed)).toEqual(refusal('FORBIDDEN'));
+    expect(await watchPlaylist(socket, randomUUID())).toEqual(refusal('NOT_FOUND'));
+    expect(await send(socket, 'subscribe', { type: 'user', id: closed })).toEqual(refusal('BAD_REQUEST'));
+    expect(await send(socket, 'unsubscribe', 'party')).toEqual(refusal('BAD_REQUEST'));
+
+    const logs = await socketLogs(stranger.id, 5);
+    expect(logs.map(({ action, metadata }) => ({ action, metadata })).sort((a, b) => a.action.localeCompare(b.action))).toEqual([
+      { action: 'WS connect', metadata: null },
+      { action: 'WS subscribe', metadata: { error: 'BAD_REQUEST' } },
+      { action: 'WS subscribe party', metadata: { error: 'FORBIDDEN' } },
+      { action: 'WS subscribe playlist', metadata: { error: 'NOT_FOUND' } },
+      { action: 'WS unsubscribe', metadata: { error: 'BAD_REQUEST' } },
+    ]);
+  });
+
+  it("logs without a device when the app names none, one that does not exist, or someone else's", async () => {
+    const user = await account();
+    const other = await account();
+    const foreign = await registerDevice(other.accessToken);
+
+    await connect({ auth: { token: user.accessToken } });
+    await connect({ auth: { token: user.accessToken, deviceId: randomUUID() } });
+    await connect({ auth: { token: user.accessToken, deviceId: foreign } });
+    await connect({ auth: { token: user.accessToken, deviceId: { $ne: null } } });
+
+    const logs = await socketLogs(user.id, 4);
+    expect(actions(logs)).toEqual(['WS connect', 'WS connect', 'WS connect', 'WS connect']);
+    for (const log of logs) expect(log).toMatchObject({ deviceId: null, platform: null, appVersion: null });
+  });
+
+  it('keeps logging when the device was deleted after the connection opened', async () => {
+    const user = await account();
+    const deviceId = await registerDevice(user.accessToken);
+    const partyId = await party(user.accessToken);
+    const socket = await connect({ auth: { token: user.accessToken, deviceId } });
+    await socketLogs(user.id, 1);
+    expect((await request('DELETE', `/devices/${deviceId}`, undefined, user.accessToken)).status).toBe(200);
+
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+
+    const logs = await socketLogs(user.id, 2);
+    expect(logs[1]).toMatchObject({ action: 'WS subscribe party', deviceId: null, platform: 'ANDROID', appVersion: '1.2.0' });
+  });
+
+  it('answers the message even when the log cannot be written', async () => {
+    const user = await account();
+    const partyId = await party(user.accessToken);
+    const socket = await connect({ auth: { token: user.accessToken } });
+    await socketLogs(user.id, 1);
+    const errors = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const writes = jest.spyOn(app.get(PrismaService).actionLog, 'create').mockRejectedValue(new Error('disk full') as never);
+    spies.push(errors, writes);
+
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+    await until(() => errors.mock.calls.some(([message]) => String(message).startsWith('Action log failed')));
+
+    expect(errors.mock.calls.map(([message]) => String(message)).filter((message) => message.startsWith('Action log'))).toEqual(['Action log failed: disk full']);
+    expect(watchers(partyId)).toBe(1);
+  });
+});
+
+describe('Realtime limits: messages per connection', () => {
+  // Fills the allowance of a connection with 30 harmless messages
+  async function useAllowance(socket: Socket) {
+    const id = randomUUID();
+    for (let i = 0; i < 30; i++) expect(await send(socket, 'unsubscribe', { type: 'party', id })).toEqual({ ok: true });
+  }
+
+  it('answers RATE_LIMITED to every message over 30 in 10 seconds, without doing any work', async () => {
+    const user = await account();
+    const partyId = await party(user.accessToken);
+    const socket = await connect({ auth: { token: user.accessToken } });
+    await useAllowance(socket);
+    const sessionChecks = jest.spyOn(app.get(SessionsService), 'verifyAccessToken');
+    const accessChecks = jest.spyOn(app.get(PartiesService), 'getDetail');
+    spies.push(sessionChecks, accessChecks);
+
+    expect(await watch(socket, partyId)).toEqual(refusal('RATE_LIMITED'));
+    expect(await send(socket, 'unsubscribe', { type: 'party', id: partyId })).toEqual(refusal('RATE_LIMITED'));
+
+    expect(sessionChecks).not.toHaveBeenCalled();
+    expect(accessChecks).not.toHaveBeenCalled();
+    expect(watchers(partyId)).toBe(0);
+    expect(socket.connected).toBe(true);
+  });
+
+  it('counts every message, also the ones no handler knows', async () => {
+    const user = await account();
+    const partyId = await party(user.accessToken);
+    const socket = await connect({ auth: { token: user.accessToken } });
+
+    for (let i = 0; i < 30; i++) socket.emit('no-such-event', { i });
+
+    expect(await watch(socket, partyId)).toEqual(refusal('RATE_LIMITED'));
+  });
+
+  it('gives each connection its own allowance', async () => {
+    const user = await account();
+    const partyId = await party(user.accessToken);
+    const busy = await connect({ auth: { token: user.accessToken } });
+    const quiet = await connect({ auth: { token: user.accessToken } });
+    await useAllowance(busy);
+
+    expect(await watch(busy, partyId)).toEqual(refusal('RATE_LIMITED'));
+    expect(await watch(quiet, partyId)).toEqual({ ok: true });
+  });
+
+  it('accepts messages again once the 10 seconds have passed', async () => {
+    const user = await account();
+    const partyId = await party(user.accessToken);
+    const socket = await connect({ auth: { token: user.accessToken } });
+    await useAllowance(socket);
+    expect(await watch(socket, partyId)).toEqual(refusal('RATE_LIMITED'));
+
+    const now = Date.now.bind(Date);
+    spies.push(jest.spyOn(Date, 'now').mockImplementation(() => now() + 5_000));
+    expect(await watch(socket, partyId)).toEqual(refusal('RATE_LIMITED'));
+    spies.push(jest.spyOn(Date, 'now').mockImplementation(() => now() + 10_001));
+
+    expect(await watch(socket, partyId)).toEqual({ ok: true });
+  });
+
+  it('logs the first refused message of a window, and only that one', async () => {
+    const user = await account();
+    const socket = await connect({ auth: { token: user.accessToken } });
+    await useAllowance(socket);
+
+    for (let i = 0; i < 5; i++) expect(await send(socket, 'unsubscribe', { type: 'party', id: randomUUID() })).toEqual(refusal('RATE_LIMITED'));
+    await sleep(300);
+
+    const logs = await socketLogs(user.id, 32);
+    expect(logs).toHaveLength(32);
+    expect(logs.filter((log) => log.action === 'WS message')).toMatchObject([{ metadata: { error: 'RATE_LIMITED' } }]);
+    expect(logs.filter((log) => log.action === 'WS unsubscribe party')).toHaveLength(30);
+  });
+});
+
+describe('Realtime limits: connections per user', () => {
+  it('lets a user hold 5 connections, and tells a 6th why before closing it', async () => {
+    const user = await account();
+    const held: Socket[] = [];
+    for (let i = 0; i < 5; i++) held.push(await connect({ auth: { token: user.accessToken } }));
+
+    const sixth = opening(user.accessToken);
+    await until(() => sixth.told.length === 2);
+
+    expect(sixth.told).toEqual([['connection:refused', { code: 'TOO_MANY_CONNECTIONS' }], ['disconnect', 'io server disconnect']]);
+    expect(held.every((socket) => socket.connected)).toBe(true);
+    expect(connectionsOf(user.id)).toBe(5);
+    // The refused one was never a connection of the app: it is not logged as one
+    await sleep(200);
+    expect(actions(await socketLogs(user.id, 5))).toEqual(Array(5).fill('WS connect'));
+  });
+
+  it('frees a place when a connection closes, and forgets a user who has none left', async () => {
+    const user = await account();
+    const held: Socket[] = [];
+    for (let i = 0; i < 5; i++) held.push(await connect({ auth: { token: user.accessToken } }));
+    const counts = (app.get(RealtimeGateway) as unknown as { connections: Map<string, number> }).connections;
+    expect(counts.get(user.id)).toBe(5);
+
+    held[0].disconnect();
+    await until(() => connectionsOf(user.id) === 4);
+    const again = opening(user.accessToken);
+    await until(() => again.socket.connected);
+    await sleep(300);
+    expect(again.told).toEqual([]);
+
+    for (const socket of [...held, again.socket]) socket.disconnect();
+    await until(() => connectionsOf(user.id) === 0);
+    expect(counts.has(user.id)).toBe(false);
+  });
+
+  it('counts each user separately', async () => {
+    const user = await account();
+    const other = await account();
+    for (let i = 0; i < 5; i++) await connect({ auth: { token: user.accessToken } });
+
+    const theirs = opening(other.accessToken);
+    await until(() => theirs.socket.connected);
+    await sleep(300);
+
+    expect(theirs.told).toEqual([]);
+  });
+
+  it('holds the limit when many connections open at the same moment', async () => {
+    const user = await account();
+
+    const all = Array.from({ length: 9 }, () => opening(user.accessToken));
+    await until(() => all.filter(({ told }) => told.length === 2).length === 4);
+    await sleep(300);
+
+    expect(all.filter(({ socket }) => socket.connected)).toHaveLength(5);
+    expect(connectionsOf(user.id)).toBe(5);
+  });
+});

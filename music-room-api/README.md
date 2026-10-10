@@ -160,10 +160,17 @@ migration après une modification du schéma : `make migration name=nom_modifica
   L'incrément du compteur et la création du vote sont dans la même
   transaction Prisma.
 - **Déplacement de playlist** : verrou optimiste. Le client envoie
-  `expectedPosition` (la position qu'il a vue en dernier) ; si elle ne
-  correspond plus à la position en base, l'API renvoie `409 Conflict` au
-  lieu d'écraser silencieusement le changement concurrent d'un autre
-  utilisateur. Le client doit alors rafraîchir avant de réessayer.
+  `expectedPosition` (la position qu'il a vue en dernier). La vérification de
+  cette position et le déplacement sont une seule requête SQL : sur plusieurs
+  déplacements simultanés du même morceau, un seul réussit, les autres
+  reçoivent `409 Conflict` et doivent rafraîchir avant de réessayer. Si le
+  morceau vient d'être retiré, la réponse est `404`.
+- **Retrait d'un morceau de playlist** : une seule requête SQL. Sur plusieurs
+  retraits simultanés du même morceau, un seul réussit, les autres reçoivent
+  `404` (pas une erreur serveur).
+- **Ajout en fin de playlist** : la position « après le dernier morceau » est
+  calculée sous un verrou sur la playlist, pour que des ajouts simultanés
+  reçoivent des positions différentes.
 - **Morceau suivant d'une party** : verrou optimiste par compteur. Chaque
   changement de lecture incrémente `playbackVersion` ; le client envoie la
   version qu'il a vue (`expectedPlaybackVersion`, `0` avant le premier
@@ -183,10 +190,130 @@ migration après une modification du schéma : `make migration name=nom_modifica
   importent le même morceau en même temps, la contrainte d'unicité refuse la
   seconde, qui renvoie alors la ligne créée par la première.
 
+## Temps réel (WebSocket)
+
+Le serveur pousse l'état d'un événement de vote ou d'une playlist à tous les
+téléphones qui le regardent, à chaque changement. Protocole : Socket.io, sur
+le même hôte et le même port que l'API REST.
+
+### Principe : des instantanés, jamais des différences
+
+Le serveur n'envoie pas « un vote a été ajouté ». Il envoie à chaque fois
+**l'état complet** (un *instantané*), c'est-à-dire ce que renvoient les routes
+REST au même moment. Le téléphone remplace ce qu'il affiche par ce qu'il
+reçoit : il ne peut donc pas diverger du serveur, même s'il a manqué un
+message.
+
+### Connexion
+
+```ts
+const socket = io(API_URL, { auth: { token: accessToken, deviceId } });
+```
+
+- `token` : l'access token, le même que pour REST. Accepté aussi dans un
+  header `Authorization: Bearer ...`. Jamais dans l'URL.
+- `deviceId` (optionnel) : l'id reçu de `POST /devices`, pour les logs
+  d'action. Accepté aussi dans un header `X-Device-Id`.
+- Sans login valide, la connexion est refusée (`connect_error` :
+  `Unauthorized`).
+
+### Messages du téléphone
+
+Deux messages, avec la même charge utile. Chacun reçoit toujours une réponse
+(l'accusé de réception de Socket.io).
+
+| Message | Charge utile | Effet |
+|---|---|---|
+| `subscribe` | `{ "type": "party" \| "playlist", "id": "<uuid>" }` | Regarder cet événement ou cette playlist. Même règle d'accès que `GET /parties/:id` ou `GET /playlists/:id`. L'instantané courant est envoyé aussitôt |
+| `unsubscribe` | la même | Ne plus le regarder |
+
+Réponse : `{ "ok": true }`, ou
+`{ "ok": false, "error": { "code": "...", "message": "..." } }`.
+
+| `code` | Signification |
+|---|---|
+| `BAD_REQUEST` | Charge utile invalide |
+| `UNAUTHORIZED` | Session expirée ou révoquée (la connexion est ensuite fermée) |
+| `FORBIDDEN` | Privé, et l'utilisateur n'est ni propriétaire ni invité |
+| `NOT_FOUND` | N'existe pas |
+| `TOO_MANY` | Déjà 20 abonnements sur cette connexion |
+| `RATE_LIMITED` | Plus de 30 messages en 10 secondes sur cette connexion |
+| `INTERNAL` | Erreur serveur |
+
+### Événements envoyés par le serveur
+
+| Événement | Contenu | Quand |
+|---|---|---|
+| `party:snapshot` | `{ party, queue, queueLength }`. `party` : comme `GET /parties/:id` (avec `nowPlaying` et `playbackVersion`). `queue` : les 100 premières entrées, comme `GET /parties/:id/queue`. `queueLength` : la taille réelle de la file | À l'abonnement, puis après chaque suggestion, vote, retrait de vote et « suivant » |
+| `playlist:snapshot` | `{ playlist, songs, songsLength }`. `playlist` : comme `GET /playlists/:id`. `songs` : les 100 premiers morceaux, comme `GET /playlists/:id/songs`. `songsLength` : le nombre réel de morceaux | À l'abonnement, puis après chaque ajout, déplacement et retrait |
+| `unsubscribed` | `{ type, id, code: "FORBIDDEN" }` | L'utilisateur n'a plus le droit de regarder (invitation révoquée ou refusée). La connexion reste ouverte |
+| `session:expired` | aucun | Le token a expiré, ou la session a été fermée (déconnexion, mot de passe changé). La connexion est fermée juste après |
+| `connection:refused` | `{ code: "TOO_MANY_CONNECTIONS" }` | L'utilisateur a déjà 5 connexions ouvertes. La connexion est fermée juste après |
+
+### Ce que le serveur garantit
+
+- **Les mêmes données que REST** : un instantané contient ce que les routes
+  REST renvoient à cet instant.
+- **Un état qui a réellement existé** : l'événement (ou la playlist) et sa
+  liste sont lus ensemble, en une seule lecture cohérente. Un changement qui
+  arrive pendant la lecture n'apparaît jamais à moitié.
+- **Dans l'ordre** : pour un même événement ou une même playlist, un
+  instantané plus ancien n'arrive jamais après un plus récent.
+- **Le dernier reçu est l'état actuel** : après un changement, un instantané
+  qui le contient est toujours envoyé. Si sa lecture échoue, elle est
+  retentée.
+- **Personne ne reçoit ce qu'il n'a plus le droit de voir** : juste avant
+  chaque envoi, le serveur revérifie la session et le droit d'accès de chaque
+  destinataire.
+- **Au plus 5 instantanés par seconde** par événement ou playlist : les
+  changements rapprochés sont regroupés dans l'instantané suivant.
+
+### Ce que l'application doit faire
+
+1. **Écouter avant de s'abonner** : poser `socket.on('party:snapshot', ...)`
+   puis envoyer `subscribe`. Inutile d'appeler REST avant : l'abonnement
+   envoie l'état courant.
+2. **Remplacer, pas fusionner** : à chaque instantané, remplacer l'affichage
+   par son contenu. Avec plusieurs abonnements, `party.id` ou `playlist.id`
+   dit lequel est concerné.
+3. **Au-delà de 100 entrées** : si `queueLength` ou `songsLength` dépasse ce
+   qui est reçu, charger les pages suivantes par REST, et les recharger en
+   arrière-plan à chaque instantané.
+4. **`session:expired`** : appeler `POST /auth/refresh`, ouvrir une nouvelle
+   connexion avec le nouveau token, puis se réabonner. Socket.io ne se
+   reconnecte pas tout seul quand c'est le serveur qui ferme.
+5. **`unsubscribed`** : quitter l'écran concerné.
+6. **Se désabonner en quittant un écran** : une connexion a droit à 20
+   abonnements.
+7. **Se réabonner pour se resynchroniser** : renvoyer `subscribe` renvoie
+   l'instantané courant.
+8. **Pendant un glisser-déposer** : attendre la fin du geste avant
+   d'appliquer un instantané. Si le déplacement reçoit `409`, afficher
+   l'état reçu.
+
+### Limites et journal d'actions
+
+- Par connexion : 20 abonnements, 30 messages par 10 secondes, 16 Ko par
+  message. Par utilisateur : 5 connexions.
+- Chaque connexion, abonnement et désabonnement écrit une ligne dans
+  `ActionLog` (`WS connect`, `WS subscribe party`...), avec l'appareil, la
+  plateforme et la version de l'application, comme les routes REST (V.6). Un
+  message refusé y figure avec sa raison.
+
+### Limites connues
+
+- **Un seul processus serveur** : l'ordre des instantanés et les abonnements
+  sont en mémoire. Plusieurs instances demanderaient un adaptateur partagé
+  (Redis).
+- **Une déconnexion (logout)** prend effet sur une connexion déjà ouverte à
+  son prochain message, au prochain instantané qu'elle devait recevoir, ou au
+  plus tard à l'expiration de son access token (15 min par défaut).
+- **Les tentatives de connexion ne sont pas limitées par IP** : un token
+  invalide est rejeté sans requête en base.
+- **Seules les 100 premières entrées** sont dans un instantané (voir le
+  point 3 ci-dessus).
+
 ## Prochaines étapes (non encore implémentées)
 
-- WebSocket Gateway (Socket.io) pour pousser en temps réel les votes/
-  déplacements aux autres clients connectés (actuellement REST pur : il faut
-  poller `/parties/:id/queue` et `/playlists/:id/songs`)
 - Music Control Delegation (modèle `ControlDelegation` déjà en base)
-- Compléter les tests des modules musique et les tests de charge (k6/Apache Benchmark)
+- Tests de charge (k6/Apache Benchmark)
