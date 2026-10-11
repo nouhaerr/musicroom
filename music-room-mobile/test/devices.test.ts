@@ -83,7 +83,7 @@ test('logout during registration prevents late profile requests and device stora
   const started = deferred(), release = deferred();
   const f = fixture(async () => { started.resolve(); await release.promise; return json({ id: 'late-device' }); });
   await f.client.login(user.email, 'password');
-  const rejected = assert.rejects(f.client.getMyProfile(), /Session fermée/);
+  const rejected = assert.rejects(f.client.getMyProfile(), /Session closed/);
   await started.promise; await f.client.logout(); release.resolve(); await rejected;
   assert.equal(f.client.user, null);
   assert.equal(f.values.has('sonora.device.v1'), false);

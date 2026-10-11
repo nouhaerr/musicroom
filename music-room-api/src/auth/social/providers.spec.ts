@@ -82,7 +82,7 @@ describe('Social provider identity checks', () => {
       'hides network and timeout details', async error => {
         mockRequest().mockRejectedValueOnce(error);
         await expect(new FacebookProvider(config).verify('token')).rejects.toThrow(
-          new ServiceUnavailableException('Vérification Facebook temporairement indisponible'),
+          new ServiceUnavailableException('Facebook verification is temporarily unavailable'),
         );
       },
     );

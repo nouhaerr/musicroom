@@ -76,7 +76,7 @@ test('removes the old refresh before sending and never retries an ambiguous netw
     return json({}, 401);
   });
   await f.client.login(user.email, 'pw');
-  await assert.rejects(f.client.request('/users/me'), /Renouvellement interrompu/);
+  await assert.rejects(f.client.request('/users/me'), /Session refresh interrupted/);
   assert.equal(f.client.user, null);
   assert.equal(f.values.has(key), false);
   await f.client.restore();
@@ -118,7 +118,7 @@ test('restore rotates a saved refresh; tokens saved for another server are never
 test('logout clears local credentials even when the server is offline', async () => {
   const f = fixture(() => { throw new TypeError('offline'); });
   await f.client.login(user.email, 'pw');
-  await assert.rejects(f.client.logout(), /Déconnexion locale effectuée/);
+  await assert.rejects(f.client.logout(), /Logged out locally/);
   assert.equal(f.client.user, null);
   assert.equal(f.values.has(key), false);
 });
@@ -130,7 +130,7 @@ test('a refresh response arriving after logout cannot resurrect the session', as
     return path === '/auth/logout' ? json({}) : json({}, 401);
   });
   await f.client.login(user.email, 'pw');
-  const pending = assert.rejects(f.client.request('/users/me'), /Session fermée/);
+  const pending = assert.rejects(f.client.request('/users/me'), /Session closed/);
   await entered.promise;
   await f.client.logout();
   response.resolve(json(session(2)));

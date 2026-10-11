@@ -31,8 +31,8 @@ function deferred<T>() {
 }
 
 test('Google requires platform config and never asks for Google offline access', () => {
-  assert.throws(() => googleConfig('ios', web), /configurée/);
-  assert.throws(() => googleConfig('android', 'not-a-client'), /configurée/);
+  assert.throws(() => googleConfig('ios', web), /not configured/);
+  assert.throws(() => googleConfig('android', 'not-a-client'), /not configured/);
   assert.deepEqual(googleConfig('android', web), { webClientId: web, offlineAccess: false, autoSelectOnSignIn: false });
   assert.equal(googleConfig('ios', web, ios).iosClientId, ios);
 });
@@ -85,7 +85,7 @@ test('linking requires a Sonora login before opening Google and carries the curr
   const f = fixture(path => json(path === '/devices' ? { id: 'device-alice' } : { ...own, googleId: 'linked' }));
   let opened = 0;
   const acquire = async () => { opened++; return 'google-token'; };
-  await assert.rejects(f.client.linkGoogle(acquire), /Connectez-vous/);
+  await assert.rejects(f.client.linkGoogle(acquire), /Log in/);
   assert.equal(opened, 0);
   await f.client.login(own.email, 'password');
   await f.client.registerDevice('IOS', 'Simulator');
@@ -116,7 +116,7 @@ test('logout while the Google chooser is open prevents a late login or link requ
   assert.equal(f.calls.length, 0);
   await f.client.login(own.email, 'password');
   const secondToken = deferred<string>();
-  const linking = assert.rejects(f.client.linkGoogle(() => secondToken.promise), /Session fermée/);
+  const linking = assert.rejects(f.client.linkGoogle(() => secondToken.promise), /Session closed/);
   await f.client.logout(); secondToken.resolve('late-token');
   await linking;
   assert.equal(f.calls.some(c => c.path === '/auth/link/google'), false);

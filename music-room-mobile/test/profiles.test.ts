@@ -82,7 +82,7 @@ test('saving a profile uses the authenticated device, updates session display an
 test('another user returned as my profile cannot replace the current session identity', async () => {
   const f = fixture(() => json({ ...me, id: 'bob' }));
   await f.client.login(me.email, 'password');
-  await assert.rejects(f.client.getMyProfile(), /Réponse de profil invalide/);
+  await assert.rejects(f.client.getMyProfile(), /Invalid profile response/);
   assert.equal(f.client.user?.id, 'alice');
 });
 
@@ -96,7 +96,7 @@ test('a profile response arriving after logout cannot restore personal data to t
     return json({});
   });
   await f.client.login(me.email, 'password');
-  const pending = assert.rejects(f.client.getMyProfile(), /Session fermée/);
+  const pending = assert.rejects(f.client.getMyProfile(), /Session closed/);
   await started;
   await f.client.logout();
   respond(json(me));
@@ -141,8 +141,8 @@ test('friendship actions target request IDs for responses and user IDs for remov
 });
 
 test('a conflict from a duplicate friend request stays visible without retrying the mutation', async () => {
-  const f = fixture(() => json({ message: 'Demande déjà envoyée' }, 409));
+  const f = fixture(() => json({ message: 'Friend request already sent' }, 409));
   await f.client.login(me.email, 'password');
-  await assert.rejects(socialApi(f.client).send('bob'), /Demande déjà envoyée/);
+  await assert.rejects(socialApi(f.client).send('bob'), /Friend request already sent/);
   assert.equal(f.calls.length, 2);
 });

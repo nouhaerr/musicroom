@@ -1,3 +1,5 @@
+import { acquireFacebookCredential } from '../auth/native-facebook';
+import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Text, View } from 'react-native';
 import type { ApiClient } from '../api/client';
@@ -11,6 +13,8 @@ export function ProfileScreen({ client, onBusy }: { client: ApiClient; onBusy: (
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  useAutoDismiss(notice, setNotice);
+  useAutoDismiss(error, setError);
   const alive = useRef(false);
   const working = useRef(false);
 
@@ -24,11 +28,26 @@ export function ProfileScreen({ client, onBusy }: { client: ApiClient; onBusy: (
     if (working.current) return;
     working.current = true; setBusy(true); onBusy(true); setError(''); setNotice('');
     try { await action(); }
-    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Impossible de charger le profil.'); }
+    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to load the profile.'); }
     finally { working.current = false; if (alive.current) { setBusy(false); onBusy(false); } }
   }
 
   function change(key: keyof ProfileDraft, value: string) { setDraft(current => current ? { ...current, [key]: value } : null); }
+
+  function linkFacebook() {
+    Alert.alert('Link Facebook to your account?', `The selected Facebook account will be able to sign in to ${profile?.email}.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Choose Facebook account', onPress: () => {
+        if (!alive.current) return;
+        void run(async () => {
+          const linked = await client.linkFacebook(acquireFacebookCredential);
+          if (!alive.current) return;
+          if (linked) setProfile(client.user as OwnProfile);
+          setNotice(linked ? 'Facebook account linked.' : 'Facebook linking cancelled.');
+        });
+      } },
+    ]);
+  }
 
   function linkGoogle() {
     Alert.alert('Lier Google à ton compte ?', `Le compte Google choisi permettra de te connecter au compte Sonora ${profile?.email}.`, [
@@ -40,8 +59,8 @@ export function ProfileScreen({ client, onBusy }: { client: ApiClient; onBusy: (
           if (!alive.current) return;
           if (linked) {
             // The link endpoint returns the refreshed own profile, already stored in memory.
-            setProfile(client.user as OwnProfile); setNotice('Compte Google lié.');
-          } else setNotice('Liaison Google annulée.');
+            setProfile(client.user as OwnProfile); setNotice('Google account linked.');
+          } else setNotice('Google linking cancelled.');
         });
       } },
     ]);
@@ -63,7 +82,7 @@ export function ProfileScreen({ client, onBusy }: { client: ApiClient; onBusy: (
       <Input label="Genres musicaux, séparés par des virgules" value={draft.genres} onChange={v => change('genres', v)} disabled={busy} />
       <Action title="Enregistrer mon profil" disabled={busy} onPress={() => void run(async () => {
         const updated = await client.updateMyProfile(profile, draft);
-        if (alive.current) { setProfile(updated); setDraft(null); setNotice('Profil enregistré.'); }
+        if (alive.current) { setProfile(updated); setDraft(null); setNotice('Profile saved.'); }
       })} />
       <Action title="Annuler" secondary disabled={busy} onPress={() => { setDraft(null); setError(''); }} />
     </> : <>
@@ -75,8 +94,11 @@ export function ProfileScreen({ client, onBusy }: { client: ApiClient; onBusy: (
         <Info title="Informations privées · moi uniquement" info={profile.privateInfo} />
         <Text style={styles.label}>Mes genres musicaux · publics</Text>
         <Text style={styles.text}>{profile.musicPreferences.join(', ') || 'Aucun genre ajouté.'}</Text>
+        <Text style={styles.label}>Facebook sign-in</Text>
+        {profile.facebookId ? <Text style={styles.text}>Facebook account linked.</Text> :
+          <Action title="Link Facebook" secondary disabled={busy} onPress={linkFacebook} />}
         <Text style={styles.label}>Connexion Google</Text>
-        {profile.googleId ? <Text style={styles.text}>Compte Google lié.</Text> :
+        {profile.googleId ? <Text style={styles.text}>Google account linked.</Text> :
           <Action title="Lier Google" secondary disabled={busy} onPress={linkGoogle} />}
         <Action title="Modifier mon profil" disabled={busy} onPress={() => { setDraft(profileDraft(profile)); setNotice(''); }} />
       </> : null}

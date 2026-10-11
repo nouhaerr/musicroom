@@ -25,8 +25,9 @@ Ce dossier est indépendant de `music-room-api` : ne pas y copier le `.env` du b
   dans une fenêtre qui conserve le formulaire. Textes de version de test à finaliser
   avant publication (responsable, hébergement, conservation et procédure de suppression).
 
-Les écrans invitations/appareils, les services musicaux et Facebook natif
-ne sont pas encore implémentés. Les tests de confidentialité backend existent ;
+Les écrans invitations/appareils et les services musicaux
+ne sont pas encore implémentés. Facebook natif est intégré pour une development build ;
+voir [Facebook natif](docs/FACEBOOK-NATIVE.md). La recette réelle reste à effectuer. Les tests de confidentialité backend existent ;
 ils ne constituent pas une validation visuelle des écrans sur téléphone.
 Voir le [suivi du sujet](docs/SUBJECT-PROGRESS.md) pour les étapes restantes.
 
@@ -64,22 +65,12 @@ d’envoyer des tokens d’un environnement à un autre.
 
 ## Emails et liens
 
-L’email de vérification actuel ouvre le backend. Après validation, revenir dans
-l’application et choisir **J’ai vérifié mon email**. Il est aussi possible de
-coller le lien complet dans l’écran de vérification.
-
-Pour réinitialiser : **Mot de passe oublié ?**, demander l’email, puis **J’ai reçu
-le lien** et coller le lien reçu. L’app en extrait seulement le token et appelle
-`POST /auth/reset-password` sur son serveur configuré. Elle ne télécharge jamais
-l’URL collée. Le backend n’a pas de page GET de reset : copier le lien depuis
-l’email plutôt que d’attendre un formulaire dans le navigateur.
-
-Le schéma `sonora` est déclaré pour une future development build. Les chemins
-`sonora://auth/verify-email?token=…` et `sonora://auth/reset-password?token=…`
-préparent l’écran correspondant, sans consommer automatiquement le token. Les
-emails backend n’ont pas été modifiés pour envoyer ces liens ; les Universal Links /
-App Links HTTPS et la configuration native restent à faire. Expo Go ne remplace
-pas cette configuration.
+Les liens HTTPS reçus ouvrent une page du backend qui propose **Open Sonora**.
+La vérification valide le compte puis redirige vers `sonora://auth/verified`.
+La réinitialisation ouvre `sonora://auth/reset-password?token=…` ; le token est
+consommé uniquement lors de l’envoi du nouveau mot de passe par POST.
+Tester ces liens avec l’app ouverte et complètement fermée dans une development build.
+Les Universal Links / Android App Links pour un domaine public restent à configurer.
 
 ## Sessions et appareils
 

@@ -1,4 +1,4 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication, ServiceUnavailableException, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -127,6 +127,26 @@ describe('Email authentication and persisted sessions', () => {
     expect((await request('POST', '/auth/login', { email, password: ['bad'] })).status).toBe(400);
     expect((await request('POST', '/auth/login', { email, password, role: 'admin' })).status).toBe(400);
     expect((await request('POST', '/auth/login', { email, password: 'wrong' })).status).toBe(401);
+  });
+
+  it('recovers an unverified account after registration email delivery fails', async () => {
+    const email = `${randomUUID()}@example.com`;
+    const password = 'Test-password-123!';
+    const delivery = jest.spyOn(app.get(MailService), 'sendVerificationEmail')
+      .mockRejectedValueOnce(new ServiceUnavailableException('SMTP unavailable'));
+    try {
+      expect((await request('POST', '/auth/register', { email, password, name: 'Mail recovery' })).status).toBe(503);
+      expect(await db.user.count({ where: { email } })).toBe(1);
+      expect(verification.has(email)).toBe(false);
+      expect((await request('POST', '/auth/login', { email, password })).status).toBe(403);
+      expect((await request('POST', '/auth/resend-verification', { email })).status).toBe(201);
+      expect(verification.get(email)).toEqual(expect.any(String));
+      expect((await request('GET', `/auth/verify-email?token=${verification.get(email)}`)).status).toBe(200);
+      expect((await request('POST', '/auth/login', { email, password })).status).toBe(201);
+      expect(await db.user.count({ where: { email } })).toBe(1);
+    } finally {
+      delivery.mockRestore();
+    }
   });
 
   it('returns a conflict for concurrent duplicate registrations', async () => {

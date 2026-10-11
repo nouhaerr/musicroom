@@ -15,16 +15,16 @@ export class FriendsService {
   }
 
   async send(senderId: string, receiverId: string) {
-    if (senderId === receiverId) throw new BadRequestException('Impossible de vous inviter vous-même');
+    if (senderId === receiverId) throw new BadRequestException('You cannot send yourself a friend request');
     return this.prisma.$transaction(async tx => {
       await lockUsers(tx, [senderId, receiverId]);
       if (!await tx.user.findUnique({ where: { id: receiverId }, select: { id: true } })) {
-        throw new NotFoundException('Utilisateur introuvable');
+        throw new NotFoundException('User not found');
       }
       const existing = await tx.friendRequest.findMany({ where: { OR: [
         { senderId, receiverId }, { senderId: receiverId, receiverId: senderId },
       ] } });
-      if (existing.some(r => r.status === 'ACCEPTED')) throw new ConflictException('Vous êtes déjà amis');
+      if (existing.some(r => r.status === 'ACCEPTED')) throw new ConflictException('You are already friends');
       const reverse = existing.find(r => r.senderId === receiverId && r.status === 'PENDING');
       if (reverse) {
         const accepted = await tx.friendRequest.update({ where: { id: reverse.id }, data: { status: 'ACCEPTED' } });
@@ -32,7 +32,7 @@ export class FriendsService {
         return accepted;
       }
       if (existing.some(r => r.senderId === senderId && r.status === 'PENDING')) {
-        throw new ConflictException('Demande déjà envoyée');
+        throw new ConflictException('Friend request already sent');
       }
       return tx.friendRequest.upsert({
         where: { senderId_receiverId: { senderId, receiverId } },
@@ -44,12 +44,12 @@ export class FriendsService {
   async respond(userId: string, id: string, action: 'accept' | 'reject' | 'cancel') {
     const request = await this.prisma.friendRequest.findUnique({ where: { id } });
     if (!request || (action === 'cancel' ? request.senderId : request.receiverId) !== userId) {
-      throw new NotFoundException('Demande introuvable');
+      throw new NotFoundException('Friend request not found');
     }
     return this.prisma.$transaction(async tx => {
       await lockUsers(tx, [request.senderId, request.receiverId]);
       const current = await tx.friendRequest.findUnique({ where: { id } });
-      if (!current || current.status !== 'PENDING') throw new ConflictException('Demande déjà traitée');
+      if (!current || current.status !== 'PENDING') throw new ConflictException('Friend request already handled');
       if (action === 'cancel') {
         await tx.friendRequest.delete({ where: { id } });
         return { deleted: true };
@@ -79,7 +79,7 @@ export class FriendsService {
     return this.prisma.$transaction(async tx => {
       await lockUsers(tx, [userId, friendId]);
       const friend = await tx.user.findFirst({ where: { id: friendId, friends: { some: { id: userId } } } });
-      if (!friend) throw new NotFoundException('Ami introuvable');
+      if (!friend) throw new NotFoundException('Friend not found');
       await tx.user.update({ where: { id: userId }, data: { friends: { disconnect: { id: friendId } } } });
       await tx.user.update({ where: { id: friendId }, data: { friends: { disconnect: { id: userId } } } });
       await tx.friendRequest.deleteMany({ where: { OR: [

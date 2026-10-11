@@ -107,3 +107,19 @@ Consulter [AUTH-USERS.md](AUTH-USERS.md) pour les routes et les corps attendus.
 
 Les fonctionnalités musique A8–A11 et leurs revues restent dans le périmètre de
 l’autre développeur. Ce document ne confirme pas leur état sur les branches distantes.
+
+## Complément du 11 octobre 2026
+
+- Recette iOS confirmée par l’utilisatrice : l’email reste affiché après un login
+  403 et le message disparaît après sept secondes.
+- Notifications de succès/erreur traduites en anglais, expiration à sept secondes
+  dans auth, profil et amis. La validation sous les champs reste visible.
+- Facebook natif : boutons inscription/login et liaison explicite depuis le profil.
+  iOS Limited Login vérifié via signature RS256/JWKS Meta, audience, issuer,
+  expiration et nonce ; Android conserve debug_token et le contrôle d’identité.
+  La recette réelle avec Meta et la validation Android restent à confirmer.
+- Durées locales vérifiées : access 15 minutes, refresh 7 jours. Chaque rotation
+  prolonge la session ; aucune limite absolue de durée n’est actuellement appliquée.
+  Même règle côté serveur pour un client web ou mobile. Logout révoque une session ;
+  reset et rejeu d’un refresh consommé révoquent toutes celles du compte.
+- Ne pas assimiler les tests de logique mobile à des tests UI du simulateur.

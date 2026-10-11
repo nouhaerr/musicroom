@@ -43,7 +43,7 @@ export class AuthController {
   @Post('resend-verification')
   async resendVerification(@Body() dto: ResendVerificationDto) {
     await this.authService.resendVerification(dto.email);
-    return { message: 'Si ce compte est éligible, vous recevrez un email. Si rien n’arrive, réessayez plus tard.' };
+    return { message: 'If this account is eligible, you will receive an email. If nothing arrives, try again later.' };
   }
 
   // LocalAuthGuard déclenche LocalStrategy.validate() -> authService.validateUserCredentials()
@@ -72,25 +72,25 @@ export class AuthController {
   @Post('forgot-password')
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
     await this.authService.forgotPassword(dto.email);
-    return { message: 'Si ce compte est éligible, vous recevrez un email. Si rien n’arrive, réessayez plus tard.' };
+    return { message: 'If this account is eligible, you will receive an email. If nothing arrives, try again later.' };
   }
 
   @Post('reset-password')
   async resetPassword(@Body() dto: ResetPasswordDto) {
     await this.authService.resetPassword(dto.token, dto.newPassword);
-    return { message: 'Mot de passe mis à jour' };
+    return { message: 'Password updated' };
   }
 
   @Get('reset-password')
   @Header('Content-Type', 'text/html; charset=utf-8')
   resetPasswordLink(@Query('token') token: string) {
-    if (!token?.trim()) throw new BadRequestException('Token requis');
+    if (!token?.trim()) throw new BadRequestException('Token is required');
     return this.redirectPage('Reset your password', 'Open Sonora to choose a new password.', this.mobileLink('reset-password', token));
   }
 
   @Post('facebook')
   loginWithFacebook(@Body() dto: FacebookLoginDto) {
-    return this.authService.loginWithFacebook(dto.accessToken);
+    return this.authService.loginWithFacebook(dto.accessToken, dto.nonce);
   }
 
   @Post('google')
@@ -102,7 +102,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Post('link/facebook')
   linkFacebook(@CurrentUser() user: PublicUser, @Body() dto: FacebookLoginDto) {
-    return this.authService.linkFacebook(user.id, dto.accessToken);
+    return this.authService.linkFacebook(user.id, dto.accessToken, dto.nonce);
   }
 
   @ApiBearerAuth()

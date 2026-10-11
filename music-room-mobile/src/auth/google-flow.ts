@@ -8,9 +8,9 @@ export interface GoogleDriver {
 
 export function googleConfig(platform: string, webClientId?: string, iosClientId?: string): GoogleConfig {
   const valid = (value?: string) => !!value && /^[\w-]+\.apps\.googleusercontent\.com$/.test(value);
-  if (platform !== 'ios' && platform !== 'android') throw new Error('La connexion Google est disponible sur Android et iOS.');
+  if (platform !== 'ios' && platform !== 'android') throw new Error('Google sign-in is available on Android and iOS.');
   if (!valid(webClientId) || (platform === 'ios' && !valid(iosClientId))) {
-    throw new Error('La connexion Google n’est pas encore configurée pour cette application. La connexion par email reste disponible.');
+    throw new Error('Google sign-in is not configured for this app yet. Email login is still available.');
   }
   return { webClientId: webClientId!, ...(platform === 'ios' ? { iosClientId } : {}), offlineAccess: false, autoSelectOnSignIn: false };
 }
@@ -31,10 +31,10 @@ export async function interactiveGoogleToken(driver: GoogleDriver, config: Googl
   } catch (error) {
     const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
     if (code === 'SIGN_IN_CANCELLED') return null;
-    if (code === 'PLAY_SERVICES_NOT_AVAILABLE') throw new Error('Mettez à jour les services Google Play, puis réessayez.');
-    if (code === 'DEVELOPER_ERROR') throw new Error('La configuration Google de cette version de Sonora doit être corrigée.');
+    if (code === 'PLAY_SERVICES_NOT_AVAILABLE') throw new Error('Update Google Play services, then try again.');
+    if (code === 'DEVELOPER_ERROR') throw new Error('Google configuration for this version of Sonora needs to be corrected.');
     // Native error messages may contain credential details: do not render or log them.
-    throw new Error('Connexion à Google impossible. Réessayez ou connectez-vous avec votre email.');
+    throw new Error('Unable to sign in with Google. Try again or log in with your email.');
   } finally {
     // Sonora uses its own refresh tokens. No Google offline access is requested.
     await driver.signOut().catch(() => undefined);

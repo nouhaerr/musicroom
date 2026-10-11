@@ -12,6 +12,7 @@ export interface OwnProfile extends PublicProfile {
   email: string;
   privateInfo: ProfileInfo;
   googleId?: string | null;
+  facebookId?: string | null;
 }
 
 export interface ProfileDraft {
@@ -38,10 +39,10 @@ export function profileDraft(profile: OwnProfile): ProfileDraft {
 
 export function profileChanges(original: OwnProfile, draft: ProfileDraft) {
   const name = draft.name.trim();
-  if (!name) throw new Error('Saisissez votre nom.');
+  if (!name) throw new Error('Enter your name.');
   const musicPreferences = [...new Set(draft.genres.split(',').map(g => g.trim().toLowerCase()).filter(Boolean))];
   if (musicPreferences.length > 50 || musicPreferences.some(g => g.length > 50)) {
-    throw new Error('Choisissez au maximum 50 genres de 50 caractères chacun.');
+    throw new Error('Choose up to 50 genres, with no more than 50 characters each.');
   }
   // PATCH replaces each JSON object: retain fields created by another client.
   return {

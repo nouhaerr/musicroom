@@ -1,3 +1,4 @@
+import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Text, View } from 'react-native';
 import type { ApiClient } from '../api/client';
@@ -24,6 +25,8 @@ export function PeopleScreen({ client, userId, onBusy }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  useAutoDismiss(notice, setNotice);
+  useAutoDismiss(error, setError);
   const alive = useRef(false);
   const working = useRef(false);
   const disabled = loading || busy;
@@ -40,7 +43,7 @@ export function PeopleScreen({ client, userId, onBusy }: {
     const request = tab === 'search' ? api.search(filters.q, filters.genre, page)
       : tab === 'friends' ? api.friends(page) : api.pending(page);
     void request.then(result => { if (active) setRows(result); })
-      .catch(e => { if (active) setError(e instanceof Error ? e.message : 'Chargement impossible.'); })
+      .catch(e => { if (active) setError(e instanceof Error ? e.message : 'Unable to load. Please try again.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [api, tab, filters.q, filters.genre, page, reload]);
@@ -49,7 +52,7 @@ export function PeopleScreen({ client, userId, onBusy }: {
     if (working.current || loading) return;
     working.current = true; setBusy(true); setError(''); setNotice('');
     try { await operation(); }
-    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Action impossible.'); }
+    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to complete this action.'); }
     finally { working.current = false; if (alive.current) setBusy(false); }
   }
   function refresh(message: string) {
@@ -66,14 +69,14 @@ export function PeopleScreen({ client, userId, onBusy }: {
   function send(person: PublicProfile) {
     void action(async () => {
       const result = await api.send(person.id);
-      refresh(result.status === 'ACCEPTED' ? 'Vous êtes maintenant amis.' : 'Demande envoyée.');
+      refresh(result.status === 'ACCEPTED' ? 'You are now friends.' : 'Friend request sent.');
     });
   }
   function remove(person: PublicProfile) {
     Alert.alert('Retirer cet ami ?', `${person.name} n’aura plus accès à tes informations réservées aux amis.`, [
       { text: 'Annuler', style: 'cancel' },
       { text: 'Retirer', style: 'destructive', onPress: () => {
-        if (alive.current) void action(async () => { await api.remove(person.id); refresh('Ami retiré.'); });
+        if (alive.current) void action(async () => { await api.remove(person.id); refresh('Friend removed.'); });
       } },
     ]);
   }
@@ -116,9 +119,9 @@ export function PeopleScreen({ client, userId, onBusy }: {
             <Text style={styles.title}>{person.name}</Text>
             <Action title={`Voir le profil de ${person.name}`} secondary disabled={disabled} onPress={() => openProfile(person)} />
             {incoming ? <>
-              <Action title="Accepter" disabled={disabled} onPress={() => void action(async () => { await api.accept(request.id); refresh('Demande acceptée.'); })} />
-              <Action title="Refuser" secondary disabled={disabled} onPress={() => void action(async () => { await api.reject(request.id); refresh('Demande refusée.'); })} />
-            </> : <Action title="Annuler la demande" secondary disabled={disabled} onPress={() => void action(async () => { await api.cancel(request.id); refresh('Demande annulée.'); })} />}
+              <Action title="Accepter" disabled={disabled} onPress={() => void action(async () => { await api.accept(request.id); refresh('Friend request accepted.'); })} />
+              <Action title="Refuser" secondary disabled={disabled} onPress={() => void action(async () => { await api.reject(request.id); refresh('Friend request declined.'); })} />
+            </> : <Action title="Annuler la demande" secondary disabled={disabled} onPress={() => void action(async () => { await api.cancel(request.id); refresh('Friend request cancelled.'); })} />}
           </View>;
         }
         const person = row as PublicProfile;

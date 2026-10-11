@@ -8,14 +8,12 @@ La formulation finale doit être relue par les auteurs et confrontée au sujet r
 ## Assistance utilisée
 
 Codex a servi à expliquer NestJS, Prisma, les sessions, SMTP/OAuth, Git/PR et la CI ;
-à proposer, écrire et adapter du code, des tests et de la documentation ; à exécuter
-les vérifications locales ; et à préparer les commits, PR et commentaires demandés.
+à adapter du code, des tests et de la documentation ; à exécuter
+les vérifications locales ; et à préparer les PR et commentaires demandés.
 
 Les domaines concernés comprennent la sécurité des fournisseurs Google/Facebook,
 l’envoi SMTP, les secrets JWT, les tests auth/social, les mises à jour de dépendances,
-la CI et la première base Expo (écrans email et client de sessions). L’assistance
-a aussi servi à relire A8/A9 et à reproduire des problèmes de concurrence dans des
-checkouts et une base de données de test séparés.
+la CI et la première base Expo (écrans email et client de sessions).
 
 ## Vérification des propositions
 
