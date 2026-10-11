@@ -25,6 +25,8 @@ const QUEUE_ORDER: Prisma.PartySongOrderByWithRelationInput[] = [
 // What each queue entry comes with, in GET /queue and in the realtime snapshot
 const QUEUE_ENTRY = { song: true, _count: { select: { votes: true } } } satisfies Prisma.PartySongInclude;
 const SNAPSHOT_QUEUE_SIZE = 100; // a realtime snapshot holds as many entries as GET /queue's largest page
+// What each party comes with in the lists: who hosts it (id and name, nothing else) and what is playing
+const PARTY_CARD = { owner: { select: { id: true, name: true } }, nowPlaying: true } satisfies Prisma.PartyInclude;
 
 @Injectable()
 export class PartiesService {
@@ -73,6 +75,7 @@ export class PartiesService {
         { visibility: Visibility.PUBLIC }, { ownerId: userId },
         { invitations: { some: { invitedUserId: userId, ...activeInvitation } } },
       ] },
+      include: PARTY_CARD,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], ...paginate(query),
     });
   }
@@ -84,6 +87,7 @@ export class PartiesService {
           { invitations: { some: { invitedUserId: userId, ...activeInvitation } } },
         ] }],
       },
+      include: PARTY_CARD,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], ...paginate(query),
     });
   }
@@ -282,6 +286,20 @@ export class PartiesService {
     });
     this.realtime.partyChanged(party.id);
     return unvoted;
+  }
+
+  // The queue entries of this party the user has voted for: what the app marks as "you voted".
+  // It is per user, so it cannot be in the realtime snapshot, which is the same for everyone.
+  async myVotes(partyId: string, userId: string, query: PaginationDto) {
+    const party = await this.findByIdOrThrow(partyId);
+    await this.assertCanView(party, userId);
+
+    const votes = await this.prisma.vote.findMany({
+      where: { userId, partySong: { partyPlaylistId: party.partyPlaylistId } },
+      select: { partySongId: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], ...paginate(query),
+    });
+    return votes.map((vote) => vote.partySongId);
   }
 
   // -----------------------------------------------------------------

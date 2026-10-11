@@ -132,13 +132,14 @@ migration après une modification du schéma : `make migration name=nom_modifica
 | Méthode | Route | Description |
 |---|---|---|
 | POST | `/parties` | Créer un événement de vote |
-| GET | `/parties` / `/parties/mine` | Événements publics / les miens |
+| GET | `/parties` / `/parties/mine` | Événements publics / les miens, chacun avec son hôte (`owner` : `id` et `name` uniquement) et `nowPlaying` |
 | GET | `/parties/:id` | Détail (respecte la visibilité), avec `nowPlaying` et `playbackVersion` |
 | POST | `/parties/:id/invite` | Inviter un utilisateur (owner uniquement) |
 | POST | `/parties/:id/join` | Rejoindre un événement |
 | GET | `/parties/:id/queue` | File d'attente triée par votes |
 | POST | `/parties/:id/songs` | Suggérer un morceau : `{ "externalId": "..." }` |
 | POST/DELETE | `/parties/:id/songs/:partySongId/vote` | Voter / retirer son vote |
+| GET | `/parties/:id/votes/mine` | Mes votes dans cet événement : la liste des `partySongId` pour lesquels j'ai voté, du plus ancien au plus récent (paginée) |
 | POST | `/parties/:id/next` | Passer au morceau suivant (owner uniquement) : `{ "expectedPlaybackVersion": n }`, voir ci-dessous |
 
 ### Music Playlist Editor (`/playlists`)
@@ -290,6 +291,11 @@ Réponse : `{ "ok": true }`, ou
 8. **Pendant un glisser-déposer** : attendre la fin du geste avant
    d'appliquer un instantané. Si le déplacement reçoit `409`, afficher
    l'état reçu.
+9. **« Vous avez voté »** : l'instantané est le même pour tous, il ne dit
+   pas pour quels morceaux *vous* avez voté. Charger
+   `GET /parties/:id/votes/mine` en ouvrant l'événement et à chaque
+   réabonnement, puis tenir cette liste à jour avec les réponses de ses
+   propres votes (`201` : ajouter, `200` au retrait : enlever).
 
 ### Limites et journal d'actions
 
