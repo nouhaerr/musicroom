@@ -116,7 +116,7 @@ export class MailService {
     const safeCode = typeof code === 'string' && ['EAUTH', 'ECONNECTION', 'ETIMEDOUT', 'ESOCKET', 'EENVELOPE', 'EMESSAGE', 'EDNS', 'ETLS'].includes(code)
       ? code : 'SMTP_ERROR';
     this.logger.error(`Échec SMTP (${safeCode}) : vérifier la configuration ou réessayer plus tard`);
-    throw new ServiceUnavailableException('Envoi des emails temporairement indisponible');
+    throw new ServiceUnavailableException('Email delivery is temporarily unavailable');
   }
 }
 

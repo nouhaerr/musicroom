@@ -29,7 +29,7 @@ export class PartiesService {
     if (dto.voteLicense === VoteLicense.LOCATION_TIME) {
       if (dto.latitude === undefined || dto.longitude === undefined || !dto.radiusMeters) {
         throw new BadRequestException(
-          'latitude, longitude et radiusMeters sont requis pour une licence LOCATION_TIME',
+          'latitude, longitude and radiusMeters are required for a LOCATION_TIME license',
         );
       }
     }
@@ -78,7 +78,7 @@ export class PartiesService {
   async findByIdOrThrow(id: string): Promise<Party> {
     const party = await this.prisma.party.findUnique({ where: { id } });
     if (!party) {
-      throw new NotFoundException('Événement introuvable');
+      throw new NotFoundException('Party not found');
     }
     return party;
   }
@@ -121,7 +121,7 @@ export class PartiesService {
     } catch (e: unknown) {
       // Contrainte @@unique([partyPlaylistId, songId]) : le morceau a déjà été suggéré
       if (this.isUniqueConstraintError(e)) {
-        throw new ConflictException('Ce morceau a déjà été suggéré pour cet événement');
+        throw new ConflictException('This track has already been suggested for this party');
       }
       throw e;
     }
@@ -202,7 +202,7 @@ export class PartiesService {
 
     const partySong = await this.prisma.partySong.findUnique({ where: { id: partySongId } });
     if (!partySong || partySong.partyPlaylistId !== party.partyPlaylistId) {
-      throw new NotFoundException('Morceau introuvable dans cet événement');
+      throw new NotFoundException('Track not found in this party');
     }
 
     try {
@@ -219,11 +219,11 @@ export class PartiesService {
       });
     } catch (e: unknown) {
       if (this.isUniqueConstraintError(e)) {
-        throw new ConflictException('Vous avez déjà voté pour ce morceau');
+        throw new ConflictException('You have already voted for this track');
       }
       // The song left the queue (it just started playing) between the check above and this write
       if (this.isMissingRowError(e)) {
-        throw new NotFoundException('Morceau introuvable dans cet événement');
+        throw new NotFoundException('Track not found in this party');
       }
       throw e;
     }
@@ -236,7 +236,7 @@ export class PartiesService {
     return this.prisma.$transaction(async (tx) => {
       const deleted = await tx.vote.deleteMany({ where: { partySongId, userId } });
       if (deleted.count === 0) {
-        throw new NotFoundException("Vous n'avez pas voté pour ce morceau");
+        throw new NotFoundException("You have not voted for this track");
       }
       return tx.partySong.update({
         where: { id: partySongId },
@@ -252,7 +252,7 @@ export class PartiesService {
     if (party.visibility === Visibility.PUBLIC) return;
     if (party.ownerId === userId) return;
     if (await this.isMemberOrInvited(party.id, userId)) return;
-    throw new ForbiddenException('Cet événement est privé');
+    throw new ForbiddenException('This party is private');
   }
 
   private async assertCanVote(party: Party, userId: string, dto: VoteDto): Promise<void> {
@@ -265,29 +265,29 @@ export class PartiesService {
       case VoteLicense.INVITED_ONLY:
         if (party.ownerId === userId) return;
         if (await this.isMemberOrInvited(party.id, userId)) return;
-        throw new ForbiddenException('Seuls les invités peuvent voter pour cet événement');
+        throw new ForbiddenException('Only invited users can vote in this party');
 
       case VoteLicense.LOCATION_TIME: {
         const now = new Date();
         if (party.voteStartsAt && now < party.voteStartsAt) {
-          throw new ForbiddenException("Le vote n'a pas encore commencé");
+          throw new ForbiddenException("Voting has not started yet");
         }
         if (party.voteEndsAt && now > party.voteEndsAt) {
-          throw new ForbiddenException('Le vote est terminé');
+          throw new ForbiddenException('Voting has ended');
         }
         if (
           party.latitude === null ||
           party.longitude === null ||
           party.radiusMeters === null
         ) {
-          throw new ForbiddenException("Zone de vote non configurée pour cet événement");
+          throw new ForbiddenException("Voting area is not configured for this party");
         }
         if (dto.latitude === undefined || dto.longitude === undefined) {
-          throw new BadRequestException('Votre position (latitude/longitude) est requise pour voter');
+          throw new BadRequestException('Your location (latitude/longitude) is required to vote');
         }
         const distance = distanceMeters(party.latitude, party.longitude, dto.latitude, dto.longitude);
         if (distance > party.radiusMeters) {
-          throw new ForbiddenException("Vous n'êtes pas dans la zone autorisée pour voter");
+          throw new ForbiddenException("You are outside the permitted voting area");
         }
         return;
       }

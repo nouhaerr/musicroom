@@ -35,14 +35,14 @@ marquées acceptées par la migration.
 
 | Route | Corps / paramètres | Résultat |
 |---|---|---|
-| `POST /auth/register` | `email`, `password` (8 caractères minimum), `name` | Utilisateur sans hash ; ne connecte pas automatiquement |
+| `POST /auth/register` | `email`, `password` (8 caractères minimum, dont un chiffre 0–9), `name` | Utilisateur sans hash ; ne connecte pas automatiquement |
 | `GET /auth/verify-email?token=...` | Token de validation | Email validé |
 | `POST /auth/resend-verification` | `email` | Réponse générique |
 | `POST /auth/login` | `email`, `password` | `accessToken`, `refreshToken`, `user` |
 | `POST /auth/refresh` | `refreshToken` | Nouveaux tokens et utilisateur |
 | `POST /auth/logout` | Access token dans le header | Révoque la session courante |
 | `POST /auth/forgot-password` | `email` | Réponse générique ; lien si le compte possède un mot de passe |
-| `POST /auth/reset-password` | `token`, `newPassword` (8 caractères minimum) | Mot de passe changé, sessions révoquées |
+| `POST /auth/reset-password` | `token`, `newPassword` (8 caractères minimum, dont un chiffre 0–9) | Mot de passe changé, sessions révoquées |
 | `POST /auth/google` | `idToken` du SDK Google | Connexion ou création du compte social |
 | `POST /auth/facebook` | `accessToken` du SDK Facebook | Connexion ou création du compte social |
 | `POST /auth/link/google` | `idToken` + access token Music Room dans le header | Lie Google au compte connecté |
@@ -76,8 +76,11 @@ révoque toutes les sessions. La validation d'email expire après 24 heures.
 `MailService` envoie les emails avec `MAIL_TRANSPORT=smtp` ; le mode `log` reste
 disponible en développement et est refusé avec `NODE_ENV=production`.
 Voir le [guide SMTP](SMTP.md) pour Gmail et les commandes de diagnostic.
-Le lien de réinitialisation n'a pas encore de page web ou d'écran mobile :
-pour tester, copier son token depuis l'email dans le corps de `POST /auth/reset-password`.
+Le backend ne fournit pas de page web pour le lien de réinitialisation.
+Pour tester dans Swagger, copier son token depuis l'email dans le corps de
+`POST /auth/reset-password`. La [base mobile Expo](../../music-room-mobile/README.md)
+permet aussi de coller le lien ou le token dans son écran de réinitialisation ;
+l'ouverture automatique depuis les emails reste à configurer et tester sur appareil.
 En cas d'échec SMTP, l'inscription renvoie 503 mais conserve le compte non vérifié :
 utiliser `/auth/resend-verification` après correction de la configuration.
 Le renvoi et le mot de passe oublié gardent une réponse générique même en cas

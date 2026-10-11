@@ -1,0 +1,45 @@
+{
+  "name": "music-room-mobile",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.ts",
+  "dependencies": {
+    "@fortawesome/fontawesome-svg-core": "^7.3.1",
+    "@fortawesome/free-brands-svg-icons": "^7.3.1",
+    "@fortawesome/free-regular-svg-icons": "^7.3.1",
+    "@fortawesome/free-solid-svg-icons": "^7.3.1",
+    "@fortawesome/react-native-fontawesome": "^1.0.0",
+    "expo": "~57.0.27",
+    "expo-build-properties": "~57.0.22",
+    "expo-constants": "~57.0.21",
+    "expo-crypto": "^57.0.3",
+    "expo-dev-client": "~57.0.19",
+    "expo-linking": "~57.0.12",
+    "expo-secure-store": "~57.0.4",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-fbsdk-next": "^13.4.3",
+    "react-native-nitro-google-signin": "2.3.0",
+    "react-native-nitro-modules": "0.37.0",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-svg": "15.15.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "dev:ios": "node --env-file-if-exists=.env scripts/check-native-config.cjs ios && expo run:ios",
+    "dev:android": "node --env-file-if-exists=.env scripts/check-native-config.cjs android && expo run:android",
+    "start:dev": "expo start --dev-client",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "export:native": "expo export --platform all"
+  },
+  "private": true
+}

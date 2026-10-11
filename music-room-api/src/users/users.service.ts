@@ -90,7 +90,7 @@ export class UsersService {
 
   async getProfile(id: string, viewerId?: string) {
     const user = await this.prisma.user.findUnique({ where: { id } });
-    if (!user) throw new NotFoundException('Utilisateur introuvable');
+    if (!user) throw new NotFoundException('User not found');
     if (id === viewerId) return toPublicUser(user);
     const friend = viewerId ? await this.prisma.user.findFirst({
       where: { id, friends: { some: { id: viewerId } } }, select: { id: true },
@@ -119,7 +119,7 @@ export class UsersService {
       return await operation();
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        throw new ConflictException('Cet email ou compte social est déjà utilisé');
+        throw new ConflictException('This email or social account is already in use');
       }
       throw error;
     }

@@ -25,7 +25,7 @@ export class DevicesService {
   }
   async remove(userId: string, id: string) {
     const result = await this.prisma.device.deleteMany({ where: { id, userId } });
-    if (!result.count) throw new NotFoundException('Appareil introuvable');
+    if (!result.count) throw new NotFoundException('Device not found');
     return { deleted: true };
   }
 }

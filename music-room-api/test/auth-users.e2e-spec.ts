@@ -1,4 +1,4 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication, ServiceUnavailableException, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -29,7 +29,8 @@ async function request(method: string, path: string, body?: unknown, token?: str
     method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  const contentType = response.headers.get('content-type') ?? '';
+  return { status: response.status, body: contentType.includes('application/json') ? await response.json() : await response.text() };
 }
 
 async function account(name = 'Listener') {
@@ -128,6 +129,26 @@ describe('Email authentication and persisted sessions', () => {
     expect((await request('POST', '/auth/login', { email, password: 'wrong' })).status).toBe(401);
   });
 
+  it('recovers an unverified account after registration email delivery fails', async () => {
+    const email = `${randomUUID()}@example.com`;
+    const password = 'Test-password-123!';
+    const delivery = jest.spyOn(app.get(MailService), 'sendVerificationEmail')
+      .mockRejectedValueOnce(new ServiceUnavailableException('SMTP unavailable'));
+    try {
+      expect((await request('POST', '/auth/register', { email, password, name: 'Mail recovery' })).status).toBe(503);
+      expect(await db.user.count({ where: { email } })).toBe(1);
+      expect(verification.has(email)).toBe(false);
+      expect((await request('POST', '/auth/login', { email, password })).status).toBe(403);
+      expect((await request('POST', '/auth/resend-verification', { email })).status).toBe(201);
+      expect(verification.get(email)).toEqual(expect.any(String));
+      expect((await request('GET', `/auth/verify-email?token=${verification.get(email)}`)).status).toBe(200);
+      expect((await request('POST', '/auth/login', { email, password })).status).toBe(201);
+      expect(await db.user.count({ where: { email } })).toBe(1);
+    } finally {
+      delivery.mockRestore();
+    }
+  });
+
   it('returns a conflict for concurrent duplicate registrations', async () => {
     const data = { email: `${randomUUID()}@example.com`, password: 'Test-password-123!', name: 'Duplicate' };
     const results = await Promise.all([request('POST', '/auth/register', data), request('POST', '/auth/register', data)]);
@@ -167,12 +188,15 @@ describe('Email authentication and persisted sessions', () => {
     expect((await request('POST', '/auth/forgot-password', { email: a.email })).status).toBe(201);
     const [token, otherToken] = resets.get(a.email)!;
     expect(token).not.toBe(otherToken);
+    expect((await request('POST', '/auth/reset-password', { token, newPassword: 'No-number-password' })).status).toBe(400);
+    // Invalid input must not consume the reset token or revoke the current session.
+    expect((await request('GET', '/users/me', undefined, a.accessToken)).status).toBe(200);
     const responses = await Promise.all([
       request('POST', '/auth/reset-password', { token, newPassword: 'New-password-123!' }),
       request('POST', '/auth/reset-password', { token, newPassword: 'New-password-123!' }),
     ]);
     expect(responses.map(r => r.status).sort()).toEqual([201, 401]);
-    expect((await request('POST', '/auth/reset-password', { token: otherToken, newPassword: 'Another-password!' })).status).toBe(401);
+    expect((await request('POST', '/auth/reset-password', { token: otherToken, newPassword: 'Another-password-123!' })).status).toBe(401);
     for (const access of [a.accessToken, other.body.accessToken]) {
       expect((await request('GET', '/users/me', undefined, access)).status).toBe(401);
     }
