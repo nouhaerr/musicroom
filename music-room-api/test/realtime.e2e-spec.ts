@@ -931,6 +931,26 @@ const invite = (id: string, userId: string, ownerToken: string) =>
 const revoke = (id: string, userId: string, ownerToken: string) =>
   request('DELETE', `/parties/${id}/invitations/${userId}`, undefined, ownerToken);
 
+// Pauses the next check of who may receive a snapshot. `reached` resolves once a round has read
+// the state and started that check; the round goes on when `release` is called.
+function holdNextCheck() {
+  const sessions = app.get(SessionsService);
+  const original = SessionsService.prototype.validSessionIds.bind(sessions);
+  let release!: () => void;
+  let start!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const reached = new Promise<void>((resolve) => { start = resolve; });
+  let held = false;
+  spies.push(jest.spyOn(sessions, 'validSessionIds').mockImplementation(async (ids: string[]) => {
+    if (held) return original(ids);
+    held = true;
+    start();
+    await released;
+    return original(ids);
+  }));
+  return { reached, release };
+}
+
 // A private party with one suggested song, its owner and a guest who is invited to it
 async function privateParty() {
   const owner = await account();
@@ -1173,6 +1193,70 @@ describe('Party snapshots: who is still allowed to receive them', () => {
     expect(Date.now() - changedAt).toBeGreaterThanOrEqual(950);
     expect(watching.last().queue[0].voteCount).toBe(1);
     expect(errors()).toEqual([`Snapshot of party:${id} failed: database busy`]);
+  });
+});
+
+describe('Party snapshots: a subscription that arrives while a round checks its receivers', () => {
+  it('sends nothing to a guest revoked before that round is sent', async () => {
+    const { owner, guest, id, entry } = await privateParty();
+    const watching = await watcher(owner.accessToken, id);
+    const check = holdNextCheck();
+    expect((await vote(id, entry, owner.accessToken)).status).toBe(201);
+    await check.reached; // a round for everyone has read the state and is checking who receives it
+
+    const late = await connect({ auth: { token: guest.accessToken } });
+    const received = record(late);
+    const notices = recordNotices(late);
+    expect(await watch(late, id)).toEqual({ ok: true }); // still invited at this moment
+    expect((await revoke(id, guest.id, owner.accessToken)).status).toBe(200);
+    check.release();
+
+    await until(() => notices.length === 1);
+    expect(notices).toEqual([['unsubscribed', { type: 'party', id, code: 'FORBIDDEN' }]]);
+    expect(received).toEqual([]); // not even the round that was being checked when they came in
+    await until(() => watching.last().queue[0].voteCount === 1);
+    expect(watchers(id)).toBe(1);
+  });
+
+  it('sends nothing to a connection logged out before that round is sent, and closes it', async () => {
+    const owner = await account();
+    const guest = await account();
+    const { id, entries } = await partyWithSongs(owner.accessToken, 1);
+    await watcher(owner.accessToken, id);
+    const check = holdNextCheck();
+    expect((await vote(id, entries[0], owner.accessToken)).status).toBe(201);
+    await check.reached;
+
+    const late = await connect({ auth: { token: guest.accessToken } });
+    const received = record(late);
+    const notices = recordNotices(late);
+    const closed = new Promise((resolve) => late.once('disconnect', resolve));
+    expect(await watch(late, id)).toEqual({ ok: true });
+    expect((await request('POST', '/auth/logout', {}, guest.accessToken)).status).toBe(201);
+    check.release();
+
+    expect(await closed).toBe('io server disconnect');
+    expect(notices).toEqual([['session:expired']]);
+    expect(received).toEqual([]);
+  });
+
+  it('gives a guest who keeps access one first snapshot, in a round of their own', async () => {
+    const { owner, guest, id, entry } = await privateParty();
+    const watching = await watcher(owner.accessToken, id);
+    const check = holdNextCheck();
+    expect((await vote(id, entry, owner.accessToken)).status).toBe(201);
+    await check.reached;
+
+    const late = await connect({ auth: { token: guest.accessToken } });
+    const received = record(late);
+    expect(await watch(late, id)).toEqual({ ok: true });
+    check.release();
+
+    await until(() => received.length === 1);
+    await sleep(500); // well over the interval between two rounds
+    expect(received).toHaveLength(1);
+    expect(shown(received[0])).toEqual(await restView(id, guest.accessToken));
+    expect(watching.received).toHaveLength(2); // the round of the vote; the newcomer's round is not for them
   });
 });
 
@@ -1558,6 +1642,29 @@ describe('Playlist snapshots: who is still allowed to receive them', () => {
 
     expect(notices).toEqual([['session:expired']]);
     expect(leaving.received).toHaveLength(1);
+    expect(playlistWatchers(id)).toBe(1);
+  });
+});
+
+describe('Playlist snapshots: a subscription that arrives while a round checks its receivers', () => {
+  it('sends nothing to a guest revoked before that round is sent', async () => {
+    const { owner, guest, id } = await privatePlaylist();
+    const host = await playlistWatcher(owner.accessToken, id);
+    const check = holdNextCheck();
+    expect((await addSong(id, owner.accessToken)).status).toBe(201);
+    await check.reached;
+
+    const late = await connect({ auth: { token: guest.accessToken } });
+    const received = recordPlaylist(late);
+    const notices = recordNotices(late);
+    expect(await watchPlaylist(late, id)).toEqual({ ok: true });
+    expect((await request('DELETE', `/playlists/${id}/invitations/${guest.id}`, undefined, owner.accessToken)).status).toBe(200);
+    check.release();
+
+    await until(() => notices.length === 1);
+    expect(notices).toEqual([['unsubscribed', { type: 'playlist', id, code: 'FORBIDDEN' }]]);
+    expect(received).toEqual([]);
+    await until(() => host.last().songs.length === 2);
     expect(playlistWatchers(id)).toBe(1);
   });
 });

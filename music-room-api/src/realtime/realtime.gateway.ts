@@ -303,12 +303,10 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
         // before this state existed is found out here and never sees it
         const receivers = this.socketsIn(room, everyone ? undefined : newcomers);
         await this.removeUnauthorized(pending.target, snapshot, receivers);
-        if (everyone) {
-          this.server.to(room).emit(event, snapshot);
-        } else {
-          for (const socket of receivers) {
-            if (socket.rooms.has(room)) socket.emit(event, snapshot); // still subscribed
-          }
+        // Only to those just checked, never to the room as it is now: whoever subscribed during
+        // the check was not checked. They are newcomers of the next round, and checked there.
+        for (const socket of receivers) {
+          if (socket.rooms.has(room)) socket.emit(event, snapshot); // still subscribed
         }
       } catch (err) {
         this.logger.error(`Snapshot of ${room} failed: ${(err as Error).message}`);
