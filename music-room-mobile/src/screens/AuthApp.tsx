@@ -10,6 +10,8 @@ import { ApiClient, ApiError, normalizeBaseUrl, tokenFromInput, type User } from
 import { secureStorage } from '../storage';
 import { ProfileScreen } from './ProfileScreen';
 import { PeopleScreen } from './PeopleScreen';
+import { LiveDebugScreen } from './LiveDebugScreen';
+import { Live } from '../realtime/live';
 import { acquireGoogleIdToken } from '../auth/native-google';
 import { passwordValidation, type PasswordFeedback } from '../auth/password-validation';
 import { Brand } from '../components/Brand';
@@ -229,7 +231,15 @@ function Sonora() {
   const [notice, setNotice] = useState('');
   useAutoDismiss(notice, setNotice);
   useAutoDismiss(error, setError);
-  const [area, setArea] = useState<'profile' | 'people'>('profile');
+  const [area, setArea] = useState<'profile' | 'people' | 'live'>('profile');
+  // TEMPORARY (live check): the live connection lives as long as its API client
+  const [live, setLive] = useState<Live | null>(null);
+  useEffect(() => {
+    if (!client) return;
+    const created = new Live(client);
+    setLive(created);
+    return () => { created.destroy(); setLive(null); };
+  }, [client]);
   const [areaBusy, setAreaBusy] = useState(false);
 
   useEffect(() => {
@@ -431,9 +441,11 @@ function Sonora() {
             <View style={s.header}>
               <Button title="Mon profil" secondary={area !== 'profile'} disabled={busy || areaBusy} onPress={() => setArea('profile')} />
               <Button title="Amis" secondary={area !== 'people'} disabled={busy || areaBusy} onPress={() => setArea('people')} />
+              <Button title="Live" secondary={area !== 'live'} disabled={busy || areaBusy} onPress={() => setArea('live')} />
             </View>
             {area === 'profile' ? <ProfileScreen key={user.id} client={client!} onBusy={setAreaBusy} /> :
-              <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} />}
+              area === 'people' ? <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} /> :
+              live ? <LiveDebugScreen key={user.id} client={client!} live={live} /> : null}
             <Button title="Se déconnecter" disabled={busy || areaBusy} onPress={() => void run(async () => { await client!.logout(); navigate('login'); setArea('profile'); setNotice('You are logged out.'); })} />
           </> : <>
             {screen === 'settings' ? <>
