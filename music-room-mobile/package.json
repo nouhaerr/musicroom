@@ -23,7 +23,8 @@
     "react-native-nitro-google-signin": "2.3.0",
     "react-native-nitro-modules": "0.37.0",
     "react-native-safe-area-context": "~5.7.0",
-    "react-native-svg": "15.15.4"
+    "react-native-svg": "15.15.4",
+    "socket.io-client": "^4.8.4"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
