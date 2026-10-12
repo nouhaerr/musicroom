@@ -108,4 +108,29 @@ export class SessionsService {
     if (!session) throw new UnauthorizedException('Session expirée ou révoquée');
     return toPublicUser(session.user);
   }
+
+  // Verifies an access token outside of an HTTP request (a WebSocket handshake), with the same
+  // rules as JwtStrategy: signature, algorithm, expiry, token type and a session still valid.
+  async verifyAccessToken(token: string) {
+    let payload: JwtPayload & { exp?: number };
+    try {
+      payload = this.jwt.verify<JwtPayload & { exp?: number }>(token, {
+        secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
+        algorithms: ['HS256'],
+      });
+    } catch { throw new UnauthorizedException('Token invalide ou expiré'); }
+    if (typeof payload.exp !== 'number') throw new UnauthorizedException('Token invalide ou expiré');
+    const user = await this.validateAccess(payload);
+    return { user, sessionId: payload.sid as string, expiresAt: new Date(payload.exp * 1000) };
+  }
+
+  // Which of these sessions are still valid, with the same rule as validateAccess (not revoked,
+  // not expired). One query for any number of sessions: the realtime gateway asks before each send.
+  async validSessionIds(sessionIds: string[]): Promise<Set<string>> {
+    const sessions = await this.prisma.authSession.findMany({
+      where: { id: { in: sessionIds }, revokedAt: null, expiresAt: { gt: new Date() } },
+      select: { id: true },
+    });
+    return new Set(sessions.map((session) => session.id));
+  }
 }

@@ -2,12 +2,16 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { PrismaService } from '../prisma/prisma.service';
 import { InvitationStatus, Prisma, ResourceType } from '../../generated/prisma';
 import { paginate, PaginationDto } from '../common/pagination.dto';
+import { RealtimeService } from '../realtime/realtime.service';
 
 export const activeInvitation = { status: { in: [InvitationStatus.PENDING, InvitationStatus.ACCEPTED] } };
 
 @Injectable()
 export class InvitationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtime: RealtimeService,
+  ) {}
 
   private async resource(tx: Prisma.TransactionClient, type: ResourceType, id: string) {
     const rows = type === 'PARTY'
@@ -42,7 +46,7 @@ export class InvitationsService {
   async respond(userId: string, id: string, accept: boolean) {
     const invitation = await this.prisma.invitation.findUnique({ where: { id } });
     if (!invitation || invitation.invitedUserId !== userId) throw new NotFoundException('Invitation introuvable');
-    return this.prisma.$transaction(async tx => {
+    const response = await this.prisma.$transaction(async tx => {
       const resourceId = invitation.partyId ?? invitation.playlistId!;
       await this.resource(tx, invitation.resourceType, resourceId);
       const current = await tx.invitation.findUnique({ where: { id } });
@@ -57,11 +61,15 @@ export class InvitationsService {
       }
       return result;
     });
+    // Declining ends the right to watch: tell the realtime gateway, which checks its watchers again
+    if (!accept && invitation.partyId) this.realtime.partyChanged(invitation.partyId);
+    if (!accept && invitation.playlistId) this.realtime.playlistChanged(invitation.playlistId);
+    return response;
   }
 
   async remove(type: ResourceType, id: string, ownerId: string, userId: string) {
     if (ownerId === userId) throw new BadRequestException('Impossible de retirer le propriétaire');
-    return this.prisma.$transaction(async tx => {
+    const removed = await this.prisma.$transaction(async tx => {
       const resource = await this.resource(tx, type, id);
       if (resource.ownerId !== ownerId) throw new ForbiddenException('Propriétaire requis');
       await tx.invitation.updateMany({
@@ -75,6 +83,10 @@ export class InvitationsService {
       }
       return { deleted: true };
     });
+    // The removed user may be watching: the realtime gateway checks its watchers again
+    if (type === 'PARTY') this.realtime.partyChanged(id);
+    else this.realtime.playlistChanged(id);
+    return removed;
   }
 
   async joinParty(id: string, userId: string) {
