@@ -116,7 +116,10 @@ export class PartiesService {
         const where = { partyPlaylistId: party.partyPlaylistId };
         const queue = await tx.partySong.findMany({ where, include: QUEUE_ENTRY, orderBy: QUEUE_ORDER, take: SNAPSHOT_QUEUE_SIZE });
         const queueLength = await tx.partySong.count({ where });
-        return { party, queue, queueLength };
+        // How long the current song has been playing, measured with this server's clock alone:
+        // a phone must not compare its own clock with nowPlayingStartedAt, the two may differ
+        const playingForMs = party.nowPlayingStartedAt ? Date.now() - party.nowPlayingStartedAt.getTime() : null;
+        return { party, queue, queueLength, playingForMs };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );

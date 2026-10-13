@@ -250,7 +250,7 @@ Réponse : `{ "ok": true }`, ou
 
 | Événement | Contenu | Quand |
 |---|---|---|
-| `party:snapshot` | `{ party, queue, queueLength }`. `party` : comme `GET /parties/:id` (avec `nowPlaying` et `playbackVersion`). `queue` : les 100 premières entrées, comme `GET /parties/:id/queue`. `queueLength` : la taille réelle de la file | À l'abonnement, puis après chaque suggestion, vote, retrait de vote et « suivant » |
+| `party:snapshot` | `{ party, queue, queueLength, playingForMs }`. `party` : comme `GET /parties/:id` (avec `nowPlaying` et `playbackVersion`). `queue` : les 100 premières entrées, comme `GET /parties/:id/queue`. `queueLength` : la taille réelle de la file. `playingForMs` : depuis combien de millisecondes le morceau en cours joue, mesuré par le serveur (`null` si rien ne joue) | À l'abonnement, puis après chaque suggestion, vote, retrait de vote et « suivant » |
 | `playlist:snapshot` | `{ playlist, songs, songsLength }`. `playlist` : comme `GET /playlists/:id`. `songs` : les 100 premiers morceaux, comme `GET /playlists/:id/songs`. `songsLength` : le nombre réel de morceaux | À l'abonnement, puis après chaque ajout, déplacement et retrait |
 | `unsubscribed` | `{ type, id, code: "FORBIDDEN" }` | L'utilisateur n'a plus le droit de regarder (invitation révoquée ou refusée). La connexion reste ouverte |
 | `session:expired` | aucun | Le token a expiré, ou la session a été fermée (déconnexion, mot de passe changé). La connexion est fermée juste après |
@@ -301,6 +301,9 @@ Réponse : `{ "ok": true }`, ou
    `GET /parties/:id/votes/mine` en ouvrant l'événement et à chaque
    réabonnement, puis tenir cette liste à jour avec les réponses de ses
    propres votes (`201` : ajouter, `200` au retrait : enlever).
+10. **Barre de progression** : partir de `playingForMs` et compter à partir
+    de l'instant où l'instantané est reçu. Ne pas comparer l'horloge du
+    téléphone à `nowPlayingStartedAt` : les deux horloges peuvent différer.
 
 ### Limites et journal d'actions
 
