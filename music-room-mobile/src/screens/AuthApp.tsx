@@ -8,6 +8,7 @@ import * as Linking from 'expo-linking';
 import Constants from 'expo-constants';
 import { ApiClient, ApiError, normalizeBaseUrl, tokenFromInput, type User } from '../api/client';
 import { secureStorage } from '../storage';
+import { AccountListScreen } from './AccountListScreen';
 import { ProfileScreen } from './ProfileScreen';
 import { PeopleScreen } from './PeopleScreen';
 import { acquireGoogleIdToken } from '../auth/native-google';
@@ -17,7 +18,7 @@ import { LegalDocuments, type LegalDocument } from '../components/LegalDocuments
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faEnvelope, faEye, faEyeSlash, faUser } from '@fortawesome/free-regular-svg-icons';
 import { faGoogle, faFacebookF } from '@fortawesome/free-brands-svg-icons';
-import { faArrowUpRightFromSquare, faEnvelopeCircleCheck, faKey, faRotateRight } from '@fortawesome/free-solid-svg-icons';
+import { faArrowUpRightFromSquare, faEnvelopeCircleCheck, faKey, faRotateRight, faTowerBroadcast, faList, faMobileScreen } from '@fortawesome/free-solid-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 
 type Screen = 'welcome' | 'login' | 'register' | 'verify' | 'forgot' | 'reset' | 'settings';
@@ -229,7 +230,7 @@ function Sonora() {
   const [notice, setNotice] = useState('');
   useAutoDismiss(notice, setNotice);
   useAutoDismiss(error, setError);
-  const [area, setArea] = useState<'profile' | 'people'>('profile');
+  const [area, setArea] = useState<'profile' | 'people' | 'rooms' | 'playlists' | 'devices'>('profile');
   const [areaBusy, setAreaBusy] = useState(false);
 
   useEffect(() => {
@@ -377,13 +378,13 @@ function Sonora() {
 
   const profile = !!user && screen !== 'settings' && screen !== 'reset' && screen !== 'verify';
   const labels: Record<Screen, string> = { welcome: '', login: 'Log in', register: 'Create account', verify: 'Verify email', forgot: 'Get reset link', reset: 'Change password', settings: 'Save server' };
-  return <SafeAreaView style={s.safe}><StatusBar style="light" />
+  return <SafeAreaView style={[s.safe, profile && { backgroundColor: '#08090d' }]}><StatusBar style="light" />
     <LegalDocuments document={legalDocument} onClose={() => setLegalDocument(null)} />
     <KeyboardAvoidingView style={s.grow} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
-        <View style={s.header}><Brand />
+        {!profile ? <View style={s.header}><Brand />
           <Pressable accessibilityRole="button" disabled={busy || areaBusy} onPress={() => navigate('settings')}><Text style={s.serverLink}>Serveur</Text></Pressable>
-        </View>
+        </View> : null}
         {profile || screen === 'welcome' || screen === 'register' || screen === 'login' || screen === 'verify' || screen === 'forgot' || screen === 'reset' ? null : <View style={s.hero}><Text style={s.eyebrow}>LA MUSIQUE, ENSEMBLE</Text>
           <Text style={s.title}>{profile ? `Salut ${user.name}.` : titles[screen]}</Text>
           <Text style={s.subtitle}>{profile ? 'Ton espace personnel est prêt.' : 'Tes morceaux. Tes amis. Ton prochain moment.'}</Text>
@@ -415,26 +416,33 @@ function Sonora() {
           {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
           <Pressable accessibilityRole="button" onPress={() => navigate('welcome')} style={s.backWelcome}><Text style={s.backWelcomeText}>← Welcome</Text></Pressable>
           <ForgotPasswordScreen email={email} busy={busy} onEmail={setEmail} onSubmit={() => void run(submit)} onLogin={() => navigate('login')} />
-        </> : screen === 'reset' && !user ? <>
+        </> : screen === 'reset' ? <>
           {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
           {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
           <Pressable accessibilityRole="button" onPress={() => navigate('welcome')} style={s.backWelcome}><Text style={s.backWelcomeText}>← Welcome</Text></Pressable>
           <ResetPasswordScreen password={password} confirm={confirm} busy={busy} passwordSubmitted={passwordSubmitted} onPassword={setPassword} onConfirm={setConfirm}
             onSubmit={() => void run(submit)} onLogin={() => navigate('login')} />
-        </> : <View style={s.card}>
+        </> : <View style={profile ? { gap: 12 } : s.card}>
           {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
           {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
           {!profile && screen !== 'settings' ? <Pressable accessibilityRole="button" onPress={() => navigate('welcome')} style={s.backWelcome}>
             <Text style={s.backWelcomeText}>← Welcome</Text>
           </Pressable> : null}
           {profile ? <>
-            <View style={s.header}>
-              <Button title="Mon profil" secondary={area !== 'profile'} disabled={busy || areaBusy} onPress={() => setArea('profile')} />
-              <Button title="Amis" secondary={area !== 'people'} disabled={busy || areaBusy} onPress={() => setArea('people')} />
-            </View>
-            {area === 'profile' ? <ProfileScreen key={user.id} client={client!} onBusy={setAreaBusy} /> :
-              <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} />}
-            <Button title="Se déconnecter" disabled={busy || areaBusy} onPress={() => void run(async () => { await client!.logout(); navigate('login'); setArea('profile'); setNotice('You are logged out.'); })} />
+            {area === 'profile' ? <ProfileScreen key={user.id} client={client!} onBusy={setAreaBusy}
+              onPeople={() => setArea('people')}
+              onLogout={async () => { await client!.logout(); navigate('login'); setArea('profile'); setNotice('You are logged out.'); }}
+              onServer={async address => {
+                const url = normalizeBaseUrl(address);
+                if (client!.baseUrl === url) return;
+                let warning = '';
+                try { await client!.logout(); } catch (e) { warning = e instanceof Error ? e.message : ''; }
+                await secureStorage.setItem(SERVER_KEY, url);
+                setServer(url); setClient(createClient(url)); navigate('login'); setArea('profile');
+                setNotice(warning || 'Backend address saved.');
+              }} /> : area === 'people' ?
+              <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} /> :
+              <AccountListScreen key={area} client={client!} area={area} />}
           </> : <>
             {screen === 'settings' ? <>
               <Text style={s.muted}>On a phone, enter your computer’s IP address on the same Wi-Fi. Changing the server signs you out.</Text>
@@ -446,7 +454,7 @@ function Sonora() {
             {screen === 'verify' ? <Text style={s.muted}>Ouvre le lien reçu par email, puis reviens te connecter. Tu peux aussi coller ce lien ci-dessous.</Text> : null}
             {['reset', 'verify'].includes(screen) ? <Field label="Lien reçu par email" value={link} change={setLink} /> : null}
             {screen === 'login' ? <Field label="Password" password value={password} change={setPassword} /> : null}
-            {['register', 'reset'].includes(screen) ? <PasswordFields reset={screen === 'reset'} password={password} confirm={confirm} onPassword={setPassword} onConfirm={setConfirm} submitted={passwordSubmitted} /> : null}
+            {screen === 'register' ? <PasswordFields password={password} confirm={confirm} onPassword={setPassword} onConfirm={setConfirm} submitted={passwordSubmitted} /> : null}
             <Button title={busy ? 'Un instant…' : labels[screen]} disabled={busy} onPress={() => void run(submit)} />
             {['login', 'register'].includes(screen) ?
               <Button title="Continuer avec Google" icon={faGoogle} secondary disabled={busy || !ready} onPress={() => void run(googleLogin)} /> : null}
@@ -462,8 +470,14 @@ function Sonora() {
             {screen !== 'login' ? <Button title="Back to login" secondary disabled={busy} onPress={() => navigate('login')} /> : null}
           </>}
         </View>}
-        <Text style={s.footer}>UNE BONNE CONNEXION CHANGE TOUT.</Text>
+        {!profile ? <Text style={s.footer}>GOOD MUSIC. BETTER TOGETHER.</Text> : null}
       </ScrollView>
+      {profile ? <View style={{ flexDirection: 'row', borderTopWidth: 1, borderColor: '#232532', backgroundColor: '#08090d', paddingVertical: 12 }}>
+        {(['rooms', 'playlists', 'devices', 'profile'] as const).map(tab => <Pressable key={tab} accessibilityRole="tab" accessibilityState={{ selected: area === tab || (tab === 'profile' && area === 'people') }} disabled={busy || areaBusy} onPress={() => setArea(tab)} style={{ flex: 1, alignItems: 'center', gap: 5, paddingVertical: 5 }}>
+          <FontAwesomeIcon icon={tab === 'rooms' ? faTowerBroadcast : tab === 'playlists' ? faList : tab === 'devices' ? faMobileScreen : faUser} size={20} color={area === tab || (tab === 'profile' && area === 'people') ? '#b1baff' : '#8589a1'} />
+          <Text style={{ color: area === tab ? '#b1baff' : '#8589a1', fontSize: 11 }}>{tab[0].toUpperCase() + tab.slice(1)}</Text>
+        </Pressable>)}
+      </View> : null}
     </KeyboardAvoidingView>
   </SafeAreaView>;
 }

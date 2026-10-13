@@ -20,7 +20,7 @@ export function Input({ label, value, onChange, multiline = false, disabled = fa
 }
 
 export function Info({ title, info }: { title: string; info: ProfileInfo | undefined }) {
-  const entries = Object.entries(info ?? {}).filter(([, value]) => value !== '' && value !== null);
+  const entries = Object.entries(info ?? {}).filter(([key, value]) => key !== 'avatar' && key !== 'username' && value !== '' && value !== null);
   return <View style={styles.section}><Text style={styles.label}>{title}</Text>
     {entries.length ? entries.map(([key, value]) => <Text key={key} style={styles.text}>
       {key === 'bio' ? '' : `${key} : `}{typeof value === 'string' ? value : JSON.stringify(value)}

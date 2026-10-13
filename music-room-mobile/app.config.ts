@@ -17,6 +17,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     plugins: [
       ...(config.plugins ?? []),
       'expo-dev-client',
+      ['expo-image-picker', { photosPermission: 'Choose a public profile photo for Sonora.', cameraPermission: false, microphonePermission: false }],
       ...(facebookId && facebookToken ? [['react-native-fbsdk-next', {
         appID: facebookId, clientToken: facebookToken, displayName: 'Sonora', scheme: `fb${facebookId}`,
         advertiserIDCollectionEnabled: false, autoLogAppEventsEnabled: false, isAutoInitEnabled: false,

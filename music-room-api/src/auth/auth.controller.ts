@@ -1,5 +1,5 @@
-import { BadRequestException, Body, Controller, Get, Header, Post, Query, Req, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiTags } from '@nestjs/swagger';
+import { BadRequestException, Body, Controller, Delete, Get, Header, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiTags, ApiOperation, ApiOkResponse, ApiConflictResponse } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
@@ -75,6 +75,17 @@ export class AuthController {
     return { message: 'If this account is eligible, you will receive an email. If nothing arrives, try again later.' };
   }
 
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Email a one-time password creation link to the signed-in social account' })
+  @ApiConflictResponse({ description: 'A password is already set; use the password reset flow.' })
+  @Post('password/setup')
+  async requestPasswordSetup(@CurrentUser() user: PublicUser) {
+    await this.authService.requestPasswordSetup(user.id);
+    return { message: 'Check your email to create your password. The link expires in 30 minutes.' };
+  }
+
   @Post('reset-password')
   async resetPassword(@Body() dto: ResetPasswordDto) {
     await this.authService.resetPassword(dto.token, dto.newPassword);
@@ -110,6 +121,26 @@ export class AuthController {
   @Post('link/google')
   linkGoogle(@CurrentUser() user: PublicUser, @Body() dto: GoogleLoginDto) {
     return this.authService.linkGoogle(user.id, dto.idToken);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Unlink google while keeping another sign-in method' })
+  @ApiOkResponse({ description: 'Updated own profile, without passwordHash. Existing sessions remain active.' })
+  @ApiConflictResponse({ description: 'Cannot unlink the last usable sign-in method.' })
+  @Delete('link/google')
+  unlinkGoogle(@CurrentUser() user: PublicUser) {
+    return this.authService.unlinkSocial(user.id, 'google');
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Unlink facebook while keeping another sign-in method' })
+  @ApiOkResponse({ description: 'Updated own profile, without passwordHash. Existing sessions remain active.' })
+  @ApiConflictResponse({ description: 'Cannot unlink the last usable sign-in method.' })
+  @Delete('link/facebook')
+  unlinkFacebook(@CurrentUser() user: PublicUser) {
+    return this.authService.unlinkSocial(user.id, 'facebook');
   }
 
   private mobileLink(path: string, token?: string): string {

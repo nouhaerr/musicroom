@@ -76,6 +76,7 @@ model User {
   emailVerifiedAt DateTime?    // rempli après validation du mail (obligatoire si authProvider = EMAIL)
 
   name             String
+  username         String? @unique
   publicInfo       Json? // visible par tout le monde
   friendsOnlyInfo  Json? // visible par les amis uniquement
   privateInfo      Json? // visible par l'utilisateur uniquement

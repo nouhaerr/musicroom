@@ -36,7 +36,15 @@ it('migrates existing preferences without losing the original JSON and preserves
     await db.$executeRaw`INSERT INTO "_PlaylistCollaborators" ("A", "B") VALUES (${playlistId}, ${users[1]})`;
     await db.$executeRaw`INSERT INTO "Invitation" (id, "resourceType", "playlistId", "invitedById", "invitedUserId")
       VALUES (${invitationId}, 'PLAYLIST', ${playlistId}, ${users[0]}, ${users[1]})`;
+    for (let i = 0; i < users.length; i++) {
+      const handle = [' @Alice_42 ', 'duplicate', 'DUPLICATE'][i];
+      await db.$executeRaw`UPDATE "User" SET "publicInfo" = ${JSON.stringify({ username: handle, bio: 'Preserved' })}::jsonb WHERE id = ${users[i]}`;
+    }
     migrate('prisma/schema.prisma');
+    expect((await db.user.findUniqueOrThrow({ where: { id: users[0] } })).username).toBe('alice_42');
+    for (const id of users.slice(1)) expect((await db.user.findUniqueOrThrow({ where: { id } })).username).toBeNull();
+    expect((await db.user.findUniqueOrThrow({ where: { id: users[0] } })).publicInfo).toEqual({ username: ' @Alice_42 ', bio: 'Preserved' });
+
     const expected = [['jazz', 'rock'], ['funk', 'soul'], []];
     for (let i = 0; i < users.length; i++) {
       const user = await db.user.findUniqueOrThrow({ where: { id: users[i] } });

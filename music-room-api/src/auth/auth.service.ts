@@ -135,17 +135,31 @@ export class AuthService {
     // Réponse générique quoi qu'il arrive côté contrôleur (anti-énumération)
   }
 
+  async requestPasswordSetup(userId: string): Promise<void> {
+    const user = await this.usersService.findById(userId);
+    if (!user) throw new UnauthorizedException('Account not found');
+    if (user.passwordHash) throw new ConflictException('A password is already set. Use Change password instead.');
+    const token = this.signPurposeToken(user, 'password-reset', '30m');
+    const { exp } = this.jwtService.decode<{ exp: number }>(token);
+    await this.prisma.passwordResetToken.create({ data: {
+      userId, tokenHash: tokenHash(token), expiresAt: new Date(exp * 1000),
+    } });
+    await this.mailService.sendPasswordResetEmail(user.email, token, true);
+  }
+
   async resetPassword(token: string, newPassword: string): Promise<void> {
     const payload = this.verifyPurposeToken(token, 'password-reset');
     const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
     await this.prisma.$transaction(async tx => {
       await lockUsers(tx, [payload.sub]);
+      const user = await tx.user.findUnique({ where: { id: payload.sub } });
+      if (!user || user.email !== payload.email) throw new UnauthorizedException('This link is no longer valid');
       const consumed = await tx.passwordResetToken.updateMany({
         where: { userId: payload.sub, tokenHash: tokenHash(token), usedAt: null, expiresAt: { gt: new Date() } },
         data: { usedAt: new Date() },
       });
       if (consumed.count !== 1) throw new UnauthorizedException('This link has expired or has already been used');
-      await tx.user.update({ where: { id: payload.sub }, data: { passwordHash } });
+      await tx.user.update({ where: { id: payload.sub }, data: { passwordHash, emailVerifiedAt: user.emailVerifiedAt ?? new Date() } });
       await tx.passwordResetToken.updateMany({ where: { userId: payload.sub, usedAt: null }, data: { usedAt: new Date() } });
       await this.sessions.revokeAll(tx, payload.sub);
     });
@@ -218,9 +232,21 @@ export class AuthService {
     return toPublicUser(user);
   }
 
-  // ---------------------------------------------------------------------
-  // Helpers JWT
-  // ---------------------------------------------------------------------
+  // Lock the user so concurrent removals cannot remove both remaining providers.
+  async unlinkSocial(userId: string, provider: 'google' | 'facebook'): Promise<PublicUser> {
+    return this.prisma.$transaction(async tx => {
+      await lockUsers(tx, [userId]);
+      const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
+      const field = provider === 'google' ? 'googleId' : 'facebookId';
+      if (!user[field]) return toPublicUser(user);
+      const other = provider === 'google' ? user.facebookId : user.googleId;
+      if (!other && !(user.passwordHash && user.emailVerifiedAt)) {
+        throw new ConflictException('Link another sign-in method before unlinking this account.');
+      }
+      return toPublicUser(await tx.user.update({ where: { id: userId }, data: { [field]: null } }));
+    });
+  }
+
   private signPurposeToken(user: User, type: TokenType, expiresIn: JwtSignOptions['expiresIn']): string {
     const secret =
       type === 'refresh'

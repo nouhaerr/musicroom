@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { INestApplication, ServiceUnavailableException, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ThrottlerGuard } from '@nestjs/throttler';
@@ -215,6 +216,35 @@ describe('Email authentication and persisted sessions', () => {
 });
 
 describe('Social accounts', () => {
+  it.each(['google', 'facebook'] as const)('unlinks %s only for an authenticated owner with a remaining sign-in method', async provider => {
+    const a = await account();
+    const field = provider === 'google' ? 'googleId' : 'facebookId';
+    await db.user.update({ where: { id: a.id }, data: { [field]: randomUUID() } });
+    expect((await request('DELETE', `/auth/link/${provider}`)).status).toBe(401);
+    const result = await request('DELETE', `/auth/link/${provider}`, undefined, a.accessToken);
+    expect(result.status).toBe(200);
+    expect(result.body[field]).toBeNull();
+    expect(result.body.hasPassword).toBe(true);
+    expect(result.body).not.toHaveProperty('passwordHash');
+    expect((await request('POST', '/auth/login', { email: a.email, password: a.password })).status).toBe(201);
+  });
+
+  it('serializes simultaneous unlinks so a social-only user keeps one provider', async () => {
+    const a = await account();
+    await db.user.update({ where: { id: a.id }, data: { passwordHash: null, googleId: randomUUID(), facebookId: randomUUID() } });
+    const results = await Promise.all(['google', 'facebook'].map(provider => request('DELETE', `/auth/link/${provider}`, undefined, a.accessToken)));
+    expect(results.map(r => r.status).sort()).toEqual([200, 409]);
+    const user = await db.user.findUniqueOrThrow({ where: { id: a.id } });
+    expect([user.googleId, user.facebookId].filter(Boolean)).toHaveLength(1);
+  });
+
+  it('does not count an unverified password as a usable replacement', async () => {
+    const a = await account();
+    await db.user.update({ where: { id: a.id }, data: { emailVerifiedAt: null, googleId: randomUUID() } });
+    expect((await request('DELETE', '/auth/link/google', undefined, a.accessToken)).status).toBe(409);
+    expect((await db.user.findUniqueOrThrow({ where: { id: a.id } })).googleId).not.toBeNull();
+  });
+
   it.each(['google', 'facebook'])('creates one account on first login and reuses its identity (%s)', async provider => {
     const mock = provider === 'google' ? google : facebook;
     const providerId = randomUUID();
@@ -466,5 +496,83 @@ describe('Login rate limit', () => {
     } finally {
       throttling = jest.spyOn(ThrottlerGuard.prototype, 'canActivate').mockResolvedValue(true);
     }
+  });
+});
+
+
+describe('Profile photos', () => {
+  it('stores, exposes and removes a validated public photo without changing other profile fields', async () => {
+    const a = await account();
+    const b = await account();
+    await request('PATCH', '/users/me', { publicInfo: { bio: 'Public bio' }, privateInfo: { birthday: '1998-08-14' } }, a.accessToken);
+    const bytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: '#abcdef' } }).jpeg().toBuffer();
+    const image = `data:image/jpeg;base64,${bytes.toString('base64')}`;
+    expect((await request('PUT', '/users/me/avatar', { image })).status).toBe(401);
+    expect((await request('PUT', '/users/me/avatar', { image, userId: b.id }, a.accessToken)).status).toBe(400);
+    expect((await request('PUT', '/users/me/avatar', { image: 'not an image' }, a.accessToken)).status).toBe(400);
+    const saved = await request('PUT', '/users/me/avatar', { image }, a.accessToken);
+    expect(saved.status).toBe(200);
+    expect(saved.body.publicInfo.bio).toBe('Public bio');
+    const avatar = saved.body.publicInfo.avatar;
+    expect(avatar).toMatch(/^data:image\/jpeg;base64,/);
+    expect((await request('GET', `/users/${a.id}`)).body.publicInfo.avatar).toBe(avatar);
+    expect((await request('GET', `/users/${a.id}`)).body).not.toHaveProperty('privateInfo');
+    // A stale normal profile edit must neither overwrite nor inject an unvalidated avatar.
+    const edited = await request('PATCH', '/users/me', { publicInfo: { bio: 'Updated', avatar: 'https://untrusted.example/photo' } }, a.accessToken);
+    expect(edited.body.publicInfo).toEqual({ bio: 'Updated', avatar });
+    expect((await request('GET', '/users/me', undefined, b.accessToken)).body.publicInfo?.avatar).toBeUndefined();
+    const removed = await request('DELETE', '/users/me/avatar', undefined, a.accessToken);
+    expect(removed.status).toBe(200);
+    expect(removed.body.publicInfo).toEqual({ bio: 'Updated' });
+    expect(removed.body.privateInfo).toEqual({ birthday: '1998-08-14' });
+    const stale = await request('PATCH', '/users/me', { publicInfo: { bio: 'Updated again', avatar } }, a.accessToken);
+    expect(stale.body.publicInfo).not.toHaveProperty('avatar');
+  });
+});
+
+
+describe('Unique usernames and social password setup', () => {
+  it('normalizes usernames, rejects invalid names and resolves concurrent claims with 409', async () => {
+    const a = await account();
+    const b = await account();
+    const username = `u_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+    const claims = await Promise.all([a, b].map(user => request('PATCH', '/users/me', { username: ` ${username.toUpperCase()} ` }, user.accessToken)));
+    expect(claims.map(r => r.status).sort()).toEqual([200, 409]);
+    const winner = claims[0].status === 200 ? a : b;
+    expect((await request('GET', `/users/${winner.id}`)).body.username).toBe(username);
+    const found = await request('GET', `/users/search?q=@${username}`);
+    expect(found.body.map((u: { id: string }) => u.id)).toContain(winner.id);
+    for (const invalid of ['ab', 'has space', 'a'.repeat(31), 'ééé', 12]) {
+      expect((await request('PATCH', '/users/me', { username: invalid }, winner.accessToken)).status).toBe(400);
+    }
+    expect((await request('PATCH', '/users/me', { username: null }, winner.accessToken)).body.username).toBeNull();
+    expect((await request('PATCH', '/users/me', { username }, b.accessToken)).status).toBe(200);
+  });
+
+  it.each(['google', 'facebook'] as const)('creates a password for %s only through the emailed single-use link', async provider => {
+    const email = `${randomUUID()}@example.com`;
+    const providerId = randomUUID();
+    (provider === 'google' ? google : facebook).verify.mockResolvedValue({ email, providerId, name: 'Social listener' });
+    const credentials = provider === 'google' ? { idToken: 'token' } : { accessToken: 'token' };
+    const login = await request('POST', `/auth/${provider}`, credentials);
+    expect(login.status).toBe(201);
+    const a = login.body;
+    // Exercise the unverified-mail case too: the mailbox link is what verifies it.
+    await db.user.update({ where: { id: a.user.id }, data: { emailVerifiedAt: null } });
+    expect((await request('POST', '/auth/password/setup')).status).toBe(401);
+    expect((await request('POST', '/auth/password/setup', {}, a.accessToken)).status).toBe(201);
+    expect((await db.user.findUniqueOrThrow({ where: { id: a.user.id } })).passwordHash).toBeNull();
+    const token = resets.get(email)!.at(-1)!;
+    expect((await request('POST', '/auth/reset-password', { token, newPassword: 'withoutdigits' })).status).toBe(400);
+    expect((await request('POST', '/auth/reset-password', { token, newPassword: 'New-password-123!' })).status).toBe(201);
+    expect((await request('GET', '/users/me', undefined, a.accessToken)).status).toBe(401);
+    expect((await request('POST', '/auth/reset-password', { token, newPassword: 'New-password-456!' })).status).toBe(401);
+    const fresh = await request('POST', '/auth/login', { email, password: 'New-password-123!' });
+    expect(fresh.status).toBe(201);
+    expect(fresh.body.user.id).toBe(a.user.id);
+    expect(fresh.body.user.hasPassword).toBe(true);
+    expect(fresh.body.user[provider === 'google' ? 'googleId' : 'facebookId']).toBe(providerId);
+    expect((await request('POST', '/auth/password/setup', {}, fresh.body.accessToken)).status).toBe(409);
+    expect((await request('POST', `/auth/${provider}`, credentials)).body.user.id).toBe(a.user.id);
   });
 });

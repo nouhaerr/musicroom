@@ -146,3 +146,48 @@ test('a conflict from a duplicate friend request stays visible without retrying 
   await assert.rejects(socialApi(f.client).send('bob'), /Friend request already sent/);
   assert.equal(f.calls.length, 2);
 });
+
+
+test('unlink updates the own profile through an authenticated DELETE without persisting personal data', async () => {
+  const { client, calls, values } = fixture(() => json({ ...me, googleId: null, hasPassword: true }));
+  await client.login(me.email, 'password123');
+  const profile = await client.unlinkSocial('google');
+  assert.equal(profile.googleId, null);
+  const call = calls.find(c => c.url.pathname === '/auth/link/google')!;
+  assert.equal(call.init.method, 'DELETE');
+  assert.ok(new Headers(call.init.headers).get('Authorization'));
+  assert.equal(client.user?.id, me.id);
+  assert.equal([...values.values()].some(v => v.includes(me.email)), false);
+});
+
+test('a section edit sends only the requested visibility tier', async () => {
+  const { client, calls } = fixture(() => json(me));
+  await client.login(me.email, 'password123');
+  await client.patchMyProfile({ privateInfo: { ...me.privateInfo, birthday: '1998-08-14' } });
+  const call = calls.find(c => c.init.method === 'PATCH')!;
+  assert.deepEqual(JSON.parse(String(call.init.body)), { privateInfo: { ...me.privateInfo, birthday: '1998-08-14' } });
+});
+
+
+test('photo replacement and removal use authenticated own-profile endpoints', async () => {
+  const { client, calls } = fixture(() => json(me));
+  await client.login(me.email, 'password123');
+  await client.setAvatar('data:image/jpeg;base64,test');
+  await client.setAvatar(null);
+  const photos = calls.filter(c => c.url.pathname === '/users/me/avatar');
+  assert.deepEqual(photos.map(c => c.init.method), ['PUT', 'DELETE']);
+  assert.deepEqual(JSON.parse(String(photos[0].init.body)), { image: 'data:image/jpeg;base64,test' });
+  assert.equal(photos[1].init.body, undefined);
+});
+
+
+test('password setup targets the authenticated account without accepting an email override', async () => {
+  const { client, calls } = fixture(() => json({ message: 'Check your email.' }));
+  await client.login(me.email, 'password123');
+  const response = await client.requestPasswordSetup();
+  assert.equal(response.message, 'Check your email.');
+  const call = calls.find(c => c.url.pathname === '/auth/password/setup')!;
+  assert.equal(call.init.method, 'POST');
+  assert.equal(call.init.body, undefined);
+  assert.ok(new Headers(call.init.headers).get('Authorization'));
+});

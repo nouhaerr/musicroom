@@ -1,3 +1,5 @@
+import { normalizeAvatar } from './avatar';
+import { lockUsers } from '../common/locks';
 import { publicProfileSelect, toPublicUser } from './user.mapper';
 import { SearchUsersDto } from './dto/search-users.dto';
 import { paginate } from '../common/pagination.dto';
@@ -79,7 +81,7 @@ export class UsersService {
   search(query: SearchUsersDto) {
     return this.prisma.user.findMany({
       where: {
-        ...(query.q ? { name: { contains: query.q.trim(), mode: 'insensitive' } } : {}),
+        ...(query.q ? { OR: [{ name: { contains: query.q.trim(), mode: 'insensitive' as const } }, { username: { contains: query.q.trim().replace(/^@/, ''), mode: 'insensitive' as const } }] } : {}),
         ...(query.genre ? { musicPreferences: { has: query.genre } } : {}),
       },
       select: publicProfileSelect,
@@ -96,7 +98,7 @@ export class UsersService {
       where: { id, friends: { some: { id: viewerId } } }, select: { id: true },
     }) : null;
     return {
-      id: user.id, name: user.name, publicInfo: user.publicInfo,
+      id: user.id, name: user.name, username: user.username, publicInfo: user.publicInfo,
       musicPreferences: user.musicPreferences,
       ...(friend ? { friendsOnlyInfo: user.friendsOnlyInfo } : {}),
     };
@@ -111,7 +113,32 @@ export class UsersService {
       musicPreferences: dto.musicPreferences,
     };
 
-    return this.prisma.user.update({ where: { id: userId }, data });
+    return this.withUniqueConflict(() => this.prisma.$transaction(async tx => {
+      await lockUsers(tx, [userId]);
+      if (dto.publicInfo) {
+        const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
+        const existing = user.publicInfo as Record<string, Prisma.InputJsonValue> | null;
+        // Avatar mutations use the dedicated validation route, including removals.
+        const info = { ...dto.publicInfo };
+        delete info.avatar;
+        delete info.username;
+        if (existing?.avatar) info.avatar = existing.avatar;
+        data.publicInfo = info as Prisma.InputJsonValue;
+      }
+      return tx.user.update({ where: { id: userId }, data });
+    }));
+  }
+
+  async setAvatar(userId: string, input: string | null) {
+    const avatar = input === null ? null : await normalizeAvatar(input);
+    return this.prisma.$transaction(async tx => {
+      await lockUsers(tx, [userId]);
+      const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
+      const publicInfo = { ...(user.publicInfo as Record<string, Prisma.InputJsonValue> | null) };
+      if (avatar === null) delete publicInfo.avatar;
+      else publicInfo.avatar = avatar;
+      return tx.user.update({ where: { id: userId }, data: { publicInfo } });
+    });
   }
 
   private async withUniqueConflict<T>(operation: () => Promise<T>): Promise<T> {
@@ -119,6 +146,9 @@ export class UsersService {
       return await operation();
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        if (Array.isArray(error.meta?.target) && error.meta.target.includes('username')) {
+          throw new ConflictException('This username is already taken. Choose another one.');
+        }
         throw new ConflictException('This email or social account is already in use');
       }
       throw error;

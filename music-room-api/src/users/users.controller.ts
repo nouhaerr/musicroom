@@ -1,6 +1,7 @@
+import { AvatarDto } from './dto/avatar.dto';
 import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { SearchUsersDto } from './dto/search-users.dto';
-import { Body, Controller, Get, Patch, Param, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Put, Get, Patch, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -26,6 +27,18 @@ export class UsersController {
     const updated = await this.usersService.updateProfile(user.id, dto);
     return toPublicUser(updated);
   }
+  @UseGuards(JwtAuthGuard)
+  @Put('me/avatar')
+  async setAvatar(@CurrentUser() user: PublicUser, @Body() dto: AvatarDto) {
+    return toPublicUser(await this.usersService.setAvatar(user.id, dto.image));
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('me/avatar')
+  async removeAvatar(@CurrentUser() user: PublicUser) {
+    return toPublicUser(await this.usersService.setAvatar(user.id, null));
+  }
+
   @Get('search')
   search(@Query() query: SearchUsersDto) {
     return this.usersService.search(query);
