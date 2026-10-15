@@ -34,6 +34,9 @@ export interface QueueEntry {
   song: Song;
 }
 
+// Where a phone is, for a party that counts votes at its location
+export interface Position { latitude: number; longitude: number }
+
 // One realtime message: the whole party, as GET /parties/:id and GET /parties/:id/queue return it
 export interface PartySnapshot {
   party: Party;
@@ -59,7 +62,10 @@ export function partiesApi(client: ApiClient) {
         if (ids.length < VOTES_PAGE_SIZE) return voted;
       }
     },
-    vote: (partyId: string, entryId: string) => client.request(vote(partyId, entryId), 'POST', {}),
+    // Adds a catalog song at the end of the queue, with no votes yet
+    suggest: (partyId: string, externalId: string) => client.request(`/parties/${id(partyId)}/songs`, 'POST', { externalId }),
+    // The position is only for a party that counts votes at its location (voteLicense LOCATION_TIME)
+    vote: (partyId: string, entryId: string, position?: Position) => client.request(vote(partyId, entryId), 'POST', position ?? {}),
     unvote: (partyId: string, entryId: string) => client.request(vote(partyId, entryId), 'DELETE'),
     // The host moves to the next song. The version is the one last seen: the server refuses an older one.
     next: (partyId: string, expectedPlaybackVersion: number) =>

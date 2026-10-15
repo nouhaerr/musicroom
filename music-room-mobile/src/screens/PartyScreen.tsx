@@ -6,7 +6,9 @@ import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { ApiError, type ApiClient } from '../api/client';
 import { clock, partiesApi, progress, type PartySnapshot, type QueueEntry } from '../api/parties';
 import type { GoneReason, Live } from '../realtime/live';
+import { currentPosition, recentPosition } from '../location';
 import { Action, styles } from '../components/ProfileUI';
+import { SuggestScreen } from './SuggestScreen';
 
 // Why the page can no longer show the party, in words for the user
 const GONE: Record<GoneReason, string> = {
@@ -18,6 +20,7 @@ const GONE: Record<GoneReason, string> = {
   BAD_REQUEST: 'Live updates are unavailable for this party.',
   TOO_MANY: 'Too many pages are open at once.',
 };
+const REFRESH_MS = 60_000; // in a party that counts votes by location, how often the page reads the position again
 
 export function PartyScreen({ client, live, partyId, onBack }: {
   client: ApiClient; live: Live; partyId: string; onBack: () => void;
@@ -31,10 +34,13 @@ export function PartyScreen({ client, live, partyId, onBack }: {
   const [error, setError] = useState('');
   const [receivedAt, setReceivedAt] = useState(0); // when the last snapshot arrived, on this phone's clock
   const [now, setNow] = useState(Date.now());
+  const [suggesting, setSuggesting] = useState(false); // the Suggest page is open, drawn in place of this one
+  const [locating, setLocating] = useState<string | null>(null); // who waits for a position reading: the party (page just opened) or the song being voted
   useAutoDismiss(error, setError);
   const alive = useRef(false);
   const working = useRef(false);
-  const disabled = loading || busy;
+  const disabled = loading || busy || locating !== null;
+  const byLocation = snapshot?.party.voteLicense === 'LOCATION_TIME';
 
   useEffect(() => {
     alive.current = true;
@@ -60,6 +66,17 @@ export function PartyScreen({ client, live, partyId, onBack }: {
     return () => { active = false; };
   }, [api, partyId]);
 
+  // In a party that counts votes by location, read the position when the page opens and then every minute,
+  // so that a vote finds a recent one and sends it at once
+  useEffect(() => {
+    if (!byLocation) return;
+    const quietly = () => void currentPosition(true).catch(() => {}); // asks nothing: if it fails, the vote reads and tells
+    if (recentPosition()) quietly();
+    else void locate(partyId).catch(e => { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to read your position.'); });
+    const timer = setInterval(quietly, REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [byLocation, partyId]);
+
   // The progress bar follows the phone's clock
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -73,12 +90,18 @@ export function PartyScreen({ client, live, partyId, onBack }: {
     catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to complete this action.'); }
     finally { working.current = false; if (alive.current) setBusy(false); }
   }
+  // A position reading someone waits for: the vote buttons wait, with the line "Finding your position…"
+  async function locate(who: string) {
+    setLocating(who);
+    try { return await currentPosition(); }
+    finally { if (alive.current) setLocating(null); }
+  }
   function toggleVote(entry: QueueEntry) {
     const had = voted.has(entry.id);
     void action(async () => {
       try {
         if (had) await api.unvote(partyId, entry.id);
-        else await api.vote(partyId, entry.id);
+        else await api.vote(partyId, entry.id, byLocation ? recentPosition() ?? await locate(entry.id) : undefined);
       } catch (e) {
         // The server is already where we wanted to go (voted from another device, or the vote is gone): only the mark was wrong
         if (!(e instanceof ApiError && e.status === (had ? 404 : 409))) throw e;
@@ -106,6 +129,7 @@ export function PartyScreen({ client, live, partyId, onBack }: {
       <Text style={styles.text}>Connecting…</Text>
     </View>;
   }
+  if (suggesting) return <SuggestScreen client={client} partyId={partyId} queue={snapshot.queue} onBack={() => setSuggesting(false)} />;
 
   const { party, queue, queueLength } = snapshot;
   const playing = progress(snapshot, receivedAt, now);
@@ -142,9 +166,14 @@ export function PartyScreen({ client, live, partyId, onBack }: {
       <Text style={styles.title}>Up next</Text>
       <Text style={styles.label}>{queueLength} {queueLength === 1 ? 'track' : 'tracks'}</Text>
     </View>
+    {locating ? <View style={p.row}>
+      <ActivityIndicator color="#B7F576" />
+      <Text style={styles.text}>Finding your position…</Text>
+    </View> : null}
     {queue.length === 0 ? <Text style={styles.text}>No song is waiting.</Text> : null}
     {queue.map((entry, index) => {
       const mine = voted.has(entry.id);
+      const waiting = locating === entry.id;
       return <View key={entry.id} style={p.entry}>
         <Text style={p.rank}>{String(index + 1).padStart(2, '0')}</Text>
         {entry.song.thumbnailUrl ? <Image source={{ uri: entry.song.thumbnailUrl }} style={p.thumb} /> : null}
@@ -154,13 +183,14 @@ export function PartyScreen({ client, live, partyId, onBack }: {
           {mine ? <Text style={p.voted}>You voted</Text> : null}
         </View>
         <Pressable accessibilityRole="button" accessibilityLabel={`${mine ? 'Remove your vote for' : 'Vote for'} ${entry.song.title}`}
-          accessibilityState={{ disabled, selected: mine }} disabled={disabled} onPress={() => toggleVote(entry)}
+          accessibilityState={{ disabled, selected: mine, busy: waiting }} disabled={disabled} onPress={() => toggleVote(entry)}
           style={[p.vote, mine && p.voteOn, disabled && p.dim]}>
-          <FontAwesomeIcon icon={mine ? faCheck : faChevronUp} color="#F3F3E9" size={14} />
+          {waiting ? <ActivityIndicator color="#F3F3E9" /> : <FontAwesomeIcon icon={mine ? faCheck : faChevronUp} color="#F3F3E9" size={14} />}
           <Text style={p.count}>{entry.voteCount}</Text>
         </Pressable>
       </View>;
     })}
+    <Action title="+ Suggest a track" onPress={() => setSuggesting(true)} />
   </View>;
 }
 

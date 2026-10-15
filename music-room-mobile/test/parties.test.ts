@@ -29,11 +29,15 @@ test('party actions name the party and the queue entry in the URL, with the meth
   const f = fixture(() => json({}));
   await f.client.login(user.email, 'password');
   const api = partiesApi(f.client);
+  await api.suggest('party 1', '3135556');
   await api.vote('party 1', 'entry/2');
+  await api.vote('party 1', 'entry/2', { latitude: 33.5731, longitude: -7.5898 });
   await api.unvote('party 1', 'entry/2');
   await api.next('party 1', 7);
   assert.deepEqual(f.calls.slice(1).map(c => [c.url.pathname, c.init.method, c.init.body === undefined ? null : JSON.parse(String(c.init.body))]), [
+    ['/parties/party%201/songs', 'POST', { externalId: '3135556' }],
     ['/parties/party%201/songs/entry%2F2/vote', 'POST', {}],
+    ['/parties/party%201/songs/entry%2F2/vote', 'POST', { latitude: 33.5731, longitude: -7.5898 }],
     ['/parties/party%201/songs/entry%2F2/vote', 'DELETE', null],
     ['/parties/party%201/next', 'POST', { expectedPlaybackVersion: 7 }],
   ]);
