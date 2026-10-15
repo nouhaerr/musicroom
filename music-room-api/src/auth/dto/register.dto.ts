@@ -1,8 +1,11 @@
+import { Transform } from 'class-transformer';
+import { normalizeEmail } from '../../common/email';
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEmail, IsString, Matches, MinLength } from 'class-validator';
+import { IsEmail, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class RegisterDto {
   @ApiProperty()
+  @Transform(({ value }) => typeof value === 'string' ? normalizeEmail(value) : value)
   @IsEmail()
   email!: string;
 
@@ -15,5 +18,6 @@ export class RegisterDto {
   @ApiProperty()
   @IsString()
   @MinLength(1)
+  @MaxLength(100)
   name!: string;
 }

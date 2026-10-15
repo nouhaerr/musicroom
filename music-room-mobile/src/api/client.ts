@@ -312,6 +312,18 @@ export class ApiClient {
     return this.syncProfile('/users/me', 'PATCH', profileChanges(original, draft));
   }
 
+  setAvatar(image: string | null): Promise<OwnProfile> {
+    return this.syncProfile('/users/me/avatar', image === null ? 'DELETE' : 'PUT', image === null ? undefined : { image });
+  }
+
+  patchMyProfile(changes: Record<string, unknown>): Promise<OwnProfile> {
+    return this.syncProfile('/users/me', 'PATCH', changes);
+  }
+
+  unlinkSocial(provider: 'google' | 'facebook'): Promise<OwnProfile> {
+    return this.syncProfile(`/auth/link/${provider}`, 'DELETE');
+  }
+
   private async syncProfile(path: string, method: string, body?: unknown): Promise<OwnProfile> {
     const generation = this.generation;
     const profile = await this.request<OwnProfile>(path, method, body);
@@ -375,6 +387,8 @@ export class ApiClient {
     return this.transport('/auth/register', 'POST', { name: name.trim(), email: email.trim(), password });
   }
   resend(email: string) { return this.transport('/auth/resend-verification', 'POST', { email: email.trim() }); }
+  requestPasswordSetup() { return this.request<{ message: string }>('/auth/password/setup', 'POST'); }
+
   forgot(email: string) { return this.transport('/auth/forgot-password', 'POST', { email: email.trim() }); }
   verify(link: string) { return this.transport(`/auth/verify-email?token=${encodeURIComponent(tokenFromInput(link))}`, 'GET'); }
   async reset(link: string, newPassword: string) {

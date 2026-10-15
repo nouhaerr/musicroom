@@ -1,3 +1,4 @@
+import { ProfileAvatar } from '../components/ProfileAvatar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Text, View } from 'react-native';
@@ -93,7 +94,7 @@ export function PeopleScreen({ client, userId, onBusy }: {
     {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
     {disabled ? <ActivityIndicator color="#B7F576" accessibilityLabel="Chargement des personnes" /> : null}
     {selected ? <>
-      <Text style={styles.title}>{selected.name}</Text>
+      <ProfileAvatar name={selected.name} info={selected.publicInfo} /><Text style={styles.title}>{selected.name}</Text>{selected.username ? <Text style={styles.text}>@{selected.username}</Text> : null}
       <Text style={styles.label}>Genres musicaux</Text>
       <Text style={styles.text}>{selected.musicPreferences.join(', ') || 'Aucun genre renseigné.'}</Text>
       {visibleProfileSections(selected).map(section => <Info key={section.title} {...section} />)}
@@ -116,7 +117,7 @@ export function PeopleScreen({ client, userId, onBusy }: {
           const person = incoming ? request.sender : request.receiver;
           return <View key={request.id} style={styles.card}>
             <Text style={styles.label}>{incoming ? 'Demande reçue' : 'Demande envoyée'}</Text>
-            <Text style={styles.title}>{person.name}</Text>
+            <ProfileAvatar name={person.name} info={person.publicInfo} size={44} /><Text style={styles.title}>{person.name}</Text>
             <Action title={`Voir le profil de ${person.name}`} secondary disabled={disabled} onPress={() => openProfile(person)} />
             {incoming ? <>
               <Action title="Accepter" disabled={disabled} onPress={() => void action(async () => { await api.accept(request.id); refresh('Friend request accepted.'); })} />
@@ -127,7 +128,7 @@ export function PeopleScreen({ client, userId, onBusy }: {
         const person = row as PublicProfile;
         if (person.id === userId) return null;
         return <View key={person.id} style={styles.card}>
-          <Text style={styles.title}>{person.name}</Text>
+          <ProfileAvatar name={person.name} info={person.publicInfo} size={44} /><Text style={styles.title}>{person.name}</Text>
           <Text style={styles.text}>{person.musicPreferences.join(', ') || 'Aucun genre renseigné.'}</Text>
           <Action title={`Voir le profil de ${person.name}`} secondary disabled={disabled} onPress={() => openProfile(person)} />
           <Action title={tab === 'friends' ? 'Retirer de mes amis' : 'Demander en ami'} secondary disabled={disabled}

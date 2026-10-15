@@ -3,6 +3,7 @@ export type ProfileInfo = Record<string, unknown> | null;
 export interface PublicProfile {
   id: string;
   name: string;
+  username?: string | null;
   publicInfo: ProfileInfo;
   musicPreferences: string[];
   friendsOnlyInfo?: ProfileInfo;
@@ -10,6 +11,8 @@ export interface PublicProfile {
 
 export interface OwnProfile extends PublicProfile {
   email: string;
+  emailVerifiedAt?: string | null;
+  hasPassword?: boolean;
   privateInfo: ProfileInfo;
   googleId?: string | null;
   facebookId?: string | null;

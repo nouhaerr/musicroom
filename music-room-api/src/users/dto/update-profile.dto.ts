@@ -1,12 +1,20 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { ArrayMaxSize, ArrayUnique, IsArray, IsObject, IsString, MaxLength, MinLength, ValidateIf } from 'class-validator';
+import { ArrayMaxSize, ArrayUnique, IsArray, IsObject, IsString, MaxLength, Matches, MinLength, ValidateIf } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class UpdateProfileDto {
+  @ApiPropertyOptional({ nullable: true, description: 'Unique lowercase username, 3–30 letters, digits or underscores. Null clears it.' })
+  @Transform(({ value }) => typeof value === 'string' ? value.trim().toLowerCase() : value)
+  @ValidateIf((_object, value) => value !== undefined && value !== null)
+  @IsString()
+  @Matches(/^[a-z0-9_]{3,30}$/, { message: 'Username must contain 3–30 letters, numbers or underscores.' })
+  username?: string | null;
+
   @ApiPropertyOptional()
   @ValidateIf((_object, value) => value !== undefined)
   @IsString()
   @MinLength(1)
+  @MaxLength(100)
   name?: string;
 
   @ApiPropertyOptional({ description: 'Informations visibles par tous' })

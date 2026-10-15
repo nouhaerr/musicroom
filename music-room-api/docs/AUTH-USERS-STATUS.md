@@ -123,3 +123,74 @@ l’autre développeur. Ce document ne confirme pas leur état sur les branches 
   Même règle côté serveur pour un client web ou mobile. Logout révoque une session ;
   reset et rejeu d’un refresh consommé révoquent toutes celles du compte.
 - Ne pas assimiler les tests de logique mobile à des tests UI du simulateur.
+
+
+## Profile/settings — 12 October 2026
+
+- User confirmed the manual iOS authentication scenarios: Google/Facebook login,
+  cancellation and explicit linking, restoration after closing the app, remaining
+  signed out after logout, verification/reset links with the app closed.
+- Profile screen follows `MobileDesign/Profile.png`: editable public name, display
+  handle and bio; friends-only city and listening preference; private birthday;
+  public genres and favorite artists; linked accounts; backend address; logout.
+- Each editor PATCHes only its relevant section and preserves unrelated JSON keys.
+  The handle is a display label, not a unique username or login identifier.
+- Password accounts can request the existing reset email from Private information.
+  Social-only accounts show that no password is set. No password-creation flow added.
+- Authenticated `DELETE /auth/link/google` and `/auth/link/facebook` return the
+  updated own profile. Removal retains existing sessions and requires another
+  social provider or a password with a verified email. A row lock prevents concurrent
+  removals from leaving the user without a sign-in method. Own profiles expose
+  `hasPassword`, never the password hash.
+- Listening activity is a stored preference only; live room sharing remains future
+  work. Bottom navigation opens paginated, read-only account lists for rooms,
+  playlists and devices. Full music editing/playback screens remain separate work.
+- Validation: 344 backend unit tests, 29 auth/users integration tests in a disposable
+  database schema, 54 mobile tests, both TypeScript checks, backend lint and iOS
+  export passed. The top of the profile and navigation were inspected in the iOS
+  simulator; new edit/unlink controls still need manual UI acceptance.
+
+### Profile manual acceptance
+
+1. Edit each section, save, leave the profile and return: verify persistence.
+2. Inspect another user's profile as a friend and non-friend: private birthday/email
+   must never appear; city is available only to friends.
+3. Link Google/Facebook, then unlink one. Unlinking the last usable method must
+   show an English error and keep the provider connected.
+4. Request a password reset from Private information, follow the email and confirm
+   existing sessions are revoked once the password changes.
+5. Change the backend URL: confirm local configuration persists and you are signed out.
+6. Check validation/error/success messages disappear after seven seconds; inspect
+   all sections on a small screen and with larger accessibility text.
+
+
+## Public profile photos — 12 October 2026
+
+- Added authenticated PUT/DELETE `/users/me/avatar`, a bounded JPEG thumbnail,
+  256px server re-encoding and metadata removal. Stored in `publicInfo.avatar`.
+  The normal profile PATCH preserves the server's photo and ignores incoming
+  avatar fields, preventing stale edits or bypassing the dedicated validator.
+- Mobile: library picker/crop, replace/remove, initials fallback, photo display in
+  profile and people screens. Native rebuild required for the new Expo modules.
+- Validation: 351 backend unit tests and 55 mobile tests pass; the focused photo
+  integration test passes against an isolated schema. Backend lint, both TypeScript
+  checks, iOS JavaScript export and the native iOS build pass (0 errors). Real photo selection remains a manual test.
+- UI acceptance steps and limitations: `music-room-mobile/docs/PROFILE.md`.
+
+
+## Unique usernames and social password setup — 13 October 2026
+
+- Optional `User.username` now has a unique index and lowercase ASCII format
+  constraint (3–30 letters, numbers, underscores). PATCH normalizes it; competing
+  claims return 409. Names and usernames are searchable. Email remains the login ID.
+- Migration `20261012010000_unique_username` applied locally. It imports only valid,
+  unambiguous legacy handles while retaining the original JSON for reference.
+- Authenticated, throttled POST `/auth/password/setup` emails a single-use 30-minute
+  password link to social-only users. Existing password accounts receive 409.
+  Completion verifies the email, sets the hash and revokes every session. Social
+  provider links are preserved. The token's email must still match the account.
+- Mobile provides Create password, and the password-link form now works while
+  signed in. The normal reset/login flows remain available.
+- Validation: 351 unit tests, 34 auth/migration integration tests, 56 mobile tests;
+  TypeScript and backend lint pass. Manual receipt/opening of the setup email and
+  duplicate username feedback in the app remain acceptance checks.
