@@ -1,7 +1,8 @@
+import { openEmailInbox } from '../auth/open-email';
 import { acquireFacebookCredential } from '../auth/native-facebook';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, ImageBackground, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, ImageBackground, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Linking from 'expo-linking';
@@ -12,14 +13,14 @@ import { AccountListScreen } from './AccountListScreen';
 import { ProfileScreen } from './ProfileScreen';
 import { PeopleScreen } from './PeopleScreen';
 import { acquireGoogleIdToken } from '../auth/native-google';
-import { passwordValidation, type PasswordFeedback } from '../auth/password-validation';
+import { passwordValidation } from '../auth/password-validation';
 import { Brand } from '../components/Brand';
 import { LegalDocuments, type LegalDocument } from '../components/LegalDocuments';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
-import { faEnvelope, faEye, faEyeSlash, faUser } from '@fortawesome/free-regular-svg-icons';
+import { faEnvelope, faUser } from '@fortawesome/free-regular-svg-icons';
 import { faGoogle, faFacebookF } from '@fortawesome/free-brands-svg-icons';
 import { faArrowUpRightFromSquare, faEnvelopeCircleCheck, faKey, faRotateRight, faTowerBroadcast, faList, faMobileScreen } from '@fortawesome/free-solid-svg-icons';
-import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
+import { Button, Field } from '../components/FormControls';
 
 type Screen = 'welcome' | 'login' | 'register' | 'verify' | 'forgot' | 'reset' | 'settings';
 const SERVER_KEY = 'sonora.server.v1';
@@ -31,34 +32,6 @@ function createClient(url: string) {
   });
 }
 const defaultServer = process.env.EXPO_PUBLIC_API_URL || (Platform.OS === 'android' ? 'http://10.0.2.2:3000' : 'http://localhost:3000');
-const titles: Record<Screen, string> = {
-  welcome: 'Good music. Better together.',
-  login: 'Retrouve ton rythme.', register: 'Bienvenue chez toi.', verify: 'Un dernier petit pas.',
-  forgot: 'On te remet en piste.', reset: 'Un nouveau départ.', settings: 'Ton serveur Sonora.',
-};
-
-function Field({ label, value, change, password = false, email = false, icon, feedback = [], onBlur }: {
-  label: string; value: string; change: (value: string) => void; password?: boolean; email?: boolean; icon?: IconDefinition;
-  feedback?: PasswordFeedback[]; onBlur?: () => void;
-}) {
-  const [visible, setVisible] = useState(false);
-  const secure = password && !visible;
-  return <View style={s.field}><Text style={s.label}>{label}</Text>
-    <View style={s.inputWrap}><TextInput accessibilityLabel={label} style={[s.input, feedback.length > 0 && (feedback.every(item => item.valid) ? s.inputValid : s.inputInvalid)]} value={value} onChangeText={change} onBlur={onBlur}
-      secureTextEntry={secure} autoCapitalize="none" autoCorrect={false}
-      keyboardType={email ? 'email-address' : 'default'} />
-      {password ? <Pressable accessibilityRole="button" accessibilityLabel={visible ? 'Hide password' : 'Show password'} onPress={() => setVisible(value => !value)} style={s.fieldIconButton}>
-        <FontAwesomeIcon icon={visible ? faEye : faEyeSlash} color="#A4ADBF" size={18} />
-      </Pressable> : icon ? <FontAwesomeIcon icon={icon} color="#A4ADBF" size={17} style={s.fieldIcon} /> : null}
-    </View>
-    {feedback.length > 0 ? <View accessibilityLiveRegion="polite">
-      {feedback.map(item => <Text key={item.message} style={[s.fieldFeedback, item.valid ? s.feedbackValid : s.feedbackInvalid]}>
-        {item.valid ? '✓' : '•'} {item.message}
-      </Text>)}
-    </View> : null}
-  </View>;
-}
-
 function PasswordFields({ password, confirm, onPassword, onConfirm, submitted, reset = false }: {
   password: string; confirm: string; onPassword: (value: string) => void; onConfirm: (value: string) => void;
   submitted: boolean; reset?: boolean;
@@ -74,16 +47,6 @@ function PasswordFields({ password, confirm, onPassword, onConfirm, submitted, r
       change={value => { setConfirmTouched(true); onConfirm(value); }} onBlur={() => setConfirmTouched(true)}
       feedback={confirmTouched || submitted ? validation.confirm : []} />
   </>;
-}
-
-function Button({ title, onPress, disabled, secondary = false, accent = false, icon }: {
-  title: string; onPress: () => void; disabled?: boolean; secondary?: boolean; accent?: boolean; icon?: IconDefinition;
-}) {
-  return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress}
-    accessibilityState={{ disabled: !!disabled }} style={({ pressed }) => [s.button, secondary && s.secondary, accent && s.accent, (disabled || pressed) && s.dim]}>
-    {icon ? <FontAwesomeIcon icon={icon} color={accent ? '#F8F9FF' : secondary ? '#E2E7F0' : '#16240E'} size={17} style={s.buttonIcon} /> : null}
-    <Text style={[s.buttonText, secondary && s.secondaryText, accent && s.accentText]}>{title}</Text>
-  </Pressable>;
 }
 
 function WelcomeScreen({ onRegister, onLogin }: { onRegister: () => void; onLogin: () => void }) {
@@ -116,7 +79,7 @@ function RegisterScreen({ name, email, password, confirm, termsAccepted, busy, r
     <Text style={s.registerEyebrow}>JOIN SONORA</Text>
     <Text style={s.registerTitle}>Your next favorite{`\n`}starts here.</Text>
     <Text style={s.registerSubtitle}>A little about you. A lot of good music.</Text>
-    <Field label="Your name" value={name} change={onName} icon={faUser} />
+    <Field label="Your name" value={name} change={onName} maxLength={100} icon={faUser} />
     <Field label="Email address" email value={email} change={onEmail} icon={faEnvelope} />
     <PasswordFields password={password} confirm={confirm} onPassword={onPassword} onConfirm={onConfirm} submitted={passwordSubmitted} />
     <View style={s.termsRow}>
@@ -371,9 +334,15 @@ function Sonora() {
   }
 
   function openEmailApp() {
-    void Linking.openURL('googlegmail://').catch(() => Linking.openURL('message://').catch(() => {
-      setError('No email app is available on this device.');
-    }));
+    void openEmailInbox(Platform.OS, {
+      openURL: Linking.openURL,
+      openAndroidInbox: async () => {
+        const { startActivityAsync } = await import('expo-intent-launcher');
+        await startActivityAsync('android.intent.action.MAIN', { category: 'android.intent.category.APP_EMAIL' });
+      },
+    }).catch(() => {
+      setError('Open your email app or webmail to read the message from Sonora.');
+    });
   }
 
   const profile = !!user && screen !== 'settings' && screen !== 'reset' && screen !== 'verify';
@@ -383,13 +352,13 @@ function Sonora() {
     <KeyboardAvoidingView style={s.grow} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
         {!profile ? <View style={s.header}><Brand />
-          <Pressable accessibilityRole="button" disabled={busy || areaBusy} onPress={() => navigate('settings')}><Text style={s.serverLink}>Serveur</Text></Pressable>
+          <Pressable accessibilityRole="button" disabled={busy || areaBusy} onPress={() => navigate('settings')}><Text style={s.serverLink}>Server</Text></Pressable>
         </View> : null}
-        {profile || screen === 'welcome' || screen === 'register' || screen === 'login' || screen === 'verify' || screen === 'forgot' || screen === 'reset' ? null : <View style={s.hero}><Text style={s.eyebrow}>LA MUSIQUE, ENSEMBLE</Text>
-          <Text style={s.title}>{profile ? `Salut ${user.name}.` : titles[screen]}</Text>
-          <Text style={s.subtitle}>{profile ? 'Ton espace personnel est prêt.' : 'Tes morceaux. Tes amis. Ton prochain moment.'}</Text>
+        {profile || screen === 'welcome' || screen === 'register' || screen === 'login' || screen === 'verify' || screen === 'forgot' || screen === 'reset' ? null : <View style={s.hero}><Text style={s.eyebrow}>MUSIC, TOGETHER</Text>
+          <Text style={s.title}>Your Sonora server</Text>
+          <Text style={s.subtitle}>Choose the backend used by this device.</Text>
         </View>}
-        {!ready && screen !== 'welcome' && screen !== 'register' && screen !== 'login' && screen !== 'verify' && screen !== 'forgot' && screen !== 'reset' ? <ActivityIndicator accessibilityLabel="Restauration de la session" color="#B7F576" size="large" /> : screen === 'welcome' && !user ? <WelcomeScreen onRegister={() => navigate('register')} onLogin={() => navigate('login')} /> : screen === 'register' && !user ? <>
+        {!ready && screen !== 'welcome' && screen !== 'register' && screen !== 'login' && screen !== 'verify' && screen !== 'forgot' && screen !== 'reset' ? <ActivityIndicator accessibilityLabel="Restoring session" color="#B7F576" size="large" /> : screen === 'welcome' && !user ? <WelcomeScreen onRegister={() => navigate('register')} onLogin={() => navigate('login')} /> : screen === 'register' && !user ? <>
           {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
           {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
           <Pressable accessibilityRole="button" onPress={() => navigate('welcome')} style={s.backWelcome}>
@@ -446,28 +415,11 @@ function Sonora() {
           </> : <>
             {screen === 'settings' ? <>
               <Text style={s.muted}>On a phone, enter your computer’s IP address on the same Wi-Fi. Changing the server signs you out.</Text>
-              <Field label="Adresse du backend" value={server} change={setServer} />
+              <Field label="Backend address" value={server} change={setServer} />
               <Text style={s.hint}>Use HTTPS for a server accessible over the internet.</Text>
             </> : null}
-            {screen === 'register' ? <Field label="Ton nom" value={name} change={setName} /> : null}
-            {['login', 'register', 'forgot', 'verify'].includes(screen) ? <Field label="Adresse email" email value={email} change={setEmail} /> : null}
-            {screen === 'verify' ? <Text style={s.muted}>Ouvre le lien reçu par email, puis reviens te connecter. Tu peux aussi coller ce lien ci-dessous.</Text> : null}
-            {['reset', 'verify'].includes(screen) ? <Field label="Lien reçu par email" value={link} change={setLink} /> : null}
-            {screen === 'login' ? <Field label="Password" password value={password} change={setPassword} /> : null}
-            {screen === 'register' ? <PasswordFields password={password} confirm={confirm} onPassword={setPassword} onConfirm={setConfirm} submitted={passwordSubmitted} /> : null}
-            <Button title={busy ? 'Un instant…' : labels[screen]} disabled={busy} onPress={() => void run(submit)} />
-            {['login', 'register'].includes(screen) ?
-              <Button title="Continuer avec Google" icon={faGoogle} secondary disabled={busy || !ready} onPress={() => void run(googleLogin)} /> : null}
-            {screen === 'verify' ? <>
-              <Button title="Resend verification email" secondary disabled={busy} onPress={() => void run(async () => { validateEmail(); await client!.resend(email); setNotice('If this account is eligible, you will receive an email.'); })} />
-              <Button title="I verified my email" secondary disabled={busy} onPress={() => navigate('login')} />
-            </> : null}
-            {screen === 'login' ? <>
-              <Button title="Create an account" secondary disabled={busy} onPress={() => navigate('register')} />
-              <Button title="Forgot password?" secondary disabled={busy} onPress={() => navigate('forgot')} />
-            </> : null}
-            {screen === 'forgot' ? <Button title="I received the link" secondary disabled={busy} onPress={() => navigate('reset')} /> : null}
-            {screen !== 'login' ? <Button title="Back to login" secondary disabled={busy} onPress={() => navigate('login')} /> : null}
+            <Button title={busy ? 'Please wait…' : labels[screen]} disabled={busy} onPress={() => void run(submit)} />
+            <Button title="Back to login" secondary disabled={busy} onPress={() => navigate('login')} />
           </>}
         </View>}
         {!profile ? <Text style={s.footer}>GOOD MUSIC. BETTER TOGETHER.</Text> : null}
@@ -485,8 +437,6 @@ function Sonora() {
 export default function App() { return <SafeAreaProvider><Sonora /></SafeAreaProvider>; }
 
 const s = StyleSheet.create({
-  inputValid: { borderColor: '#B7F576' }, inputInvalid: { borderColor: '#FFC0B7' },
-  fieldFeedback: { fontSize: 13, lineHeight: 20 }, feedbackValid: { color: '#B7F576' }, feedbackInvalid: { color: '#FFC0B7' },
   safe: { flex: 1, backgroundColor: '#10141E' }, grow: { flex: 1 },
   page: { flexGrow: 1, padding: 24, paddingBottom: 40, width: '100%', maxWidth: 540, alignSelf: 'center' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14 },
@@ -496,11 +446,7 @@ const s = StyleSheet.create({
   title: { color: '#F3F3E9', fontSize: 38, lineHeight: 44, fontWeight: '800', letterSpacing: -1.2 },
   subtitle: { color: '#A4ADBF', fontSize: 16, lineHeight: 24, marginTop: 14 },
   card: { backgroundColor: '#1B2130', borderColor: '#2D3547', borderWidth: 1, borderRadius: 24, padding: 22, gap: 12 },
-  field: { gap: 8, marginVertical: 3 }, label: { color: '#DBE0EB', fontSize: 13, fontWeight: '600', marginTop: 6 }, inputWrap: { position: 'relative', justifyContent: 'center' }, fieldIcon: { position: 'absolute', right: 16 }, fieldIconButton: { position: 'absolute', right: 9, padding: 8 },
-  input: { color: '#FAFAF5', backgroundColor: '#111722', borderColor: '#3B4355', borderWidth: 1, borderRadius: 12, padding: 15, paddingRight: 48, fontSize: 16, minHeight: 52 },
-  button: { backgroundColor: '#B7F576', borderRadius: 13, padding: 16, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 9, minHeight: 52 }, buttonIcon: { marginRight: 2 },
-  buttonText: { color: '#16240E', fontSize: 16, fontWeight: '700' }, accentText: { color: '#F8F9FF' }, accent: { backgroundColor: '#4961EE' }, secondary: { backgroundColor: '#242D3E' },
-  secondaryText: { color: '#E2E7F0' }, dim: { opacity: 0.55 }, muted: { color: '#B4BDCE', lineHeight: 23, fontSize: 15 },
+  muted: { color: '#B4BDCE', lineHeight: 23, fontSize: 15 },
   error: { color: '#FFC0B7', backgroundColor: '#452825', borderRadius: 10, padding: 12, lineHeight: 21 },
   notice: { color: '#D4F2B6', backgroundColor: '#283525', borderRadius: 10, padding: 12, lineHeight: 21 },
   hint: { color: '#9FAABC', fontSize: 12, lineHeight: 18 }, footer: { color: '#6F7B90', textAlign: 'center', fontSize: 10, letterSpacing: 1.4, marginTop: 30 },

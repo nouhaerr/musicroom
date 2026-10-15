@@ -1,3 +1,5 @@
+import { Transform } from 'class-transformer';
+import { normalizeEmail } from '../../common/email';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEmail, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 
@@ -9,12 +11,14 @@ export class RefreshTokenDto {
 
 export class ResendVerificationDto {
   @ApiProperty()
+  @Transform(({ value }) => typeof value === 'string' ? normalizeEmail(value) : value)
   @IsEmail()
   email!: string;
 }
 
 export class ForgotPasswordDto {
   @ApiProperty()
+  @Transform(({ value }) => typeof value === 'string' ? normalizeEmail(value) : value)
   @IsEmail()
   email!: string;
 }

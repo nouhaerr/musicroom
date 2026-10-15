@@ -576,3 +576,54 @@ describe('Unique usernames and social password setup', () => {
     expect((await request('POST', `/auth/${provider}`, credentials)).body.user.id).toBe(a.user.id);
   });
 });
+
+
+describe('PR review regressions', () => {
+  it('treats email casing consistently across registration, login, recovery and social login', async () => {
+    const email = `case-${randomUUID()}@example.com`;
+    const password = 'Password-123!';
+    const created = await request('POST', '/auth/register', { email: ` ${email.toUpperCase()} `, password, name: 'Case test' });
+    expect(created.status).toBe(201);
+    expect(created.body.email).toBe(email);
+    expect((await request('POST', '/auth/register', { email, password, name: 'Duplicate' })).status).toBe(409);
+    expect((await request('POST', '/auth/resend-verification', { email: email.toUpperCase() })).status).toBe(201);
+    await request('GET', `/auth/verify-email?token=${verification.get(email)}`);
+    expect((await request('POST', '/auth/login', { email: email.toUpperCase(), password })).body.user.id).toBe(created.body.id);
+    await request('POST', '/auth/forgot-password', { email: email.toUpperCase() });
+    expect(resets.get(email)?.length).toBe(1);
+    for (const [provider, mock] of [['google', google], ['facebook', facebook]] as const) {
+      mock.verify.mockResolvedValue({ email: email.toUpperCase(), providerId: randomUUID(), name: 'Social case test' });
+      expect((await request('POST', `/auth/${provider}`, provider === 'google' ? { idToken: 'test' } : { accessToken: 'test' })).status).toBe(409);
+    }
+    expect(await db.user.count({ where: { email } })).toBe(1);
+  });
+
+  it('prevents concurrent registrations with case variants from creating duplicate accounts', async () => {
+    const email = `race-${randomUUID()}@example.com`;
+    const results = await Promise.all([email, email.toUpperCase()].map(value => request('POST', '/auth/register', { email: value, password: 'Password-123!', name: 'Race' })));
+    expect(results.map(result => result.status).sort()).toEqual([201, 409]);
+  });
+
+  it('rejects oversized display names on registration and profile updates', async () => {
+    const name = 'a'.repeat(101);
+    expect((await request('POST', '/auth/register', { email: `${randomUUID()}@example.com`, password: 'Password-123!', name })).status).toBe(400);
+    const user = await account();
+    expect((await request('PATCH', '/users/me', { name }, user.accessToken)).status).toBe(400);
+  });
+
+  it('does not cache token pages and renders invalid verification links as HTML', async () => {
+    for (const path of ['/auth/reset-password?token=test', '/auth/reset-password', '/auth/verify-email?token=invalid']) {
+      const response = await fetch(base + path);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+      expect(response.headers.get('content-type')).toContain('text/html');
+      const html = await response.text();
+      expect(html).toContain('<!doctype html>');
+      if (path.includes('verify-email')) {
+        expect(response.status).toBe(401);
+        expect(html).toContain('invalid or expired');
+        expect(html).not.toContain('window.setTimeout');
+      }
+    }
+  });
+});

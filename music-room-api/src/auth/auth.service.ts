@@ -1,3 +1,4 @@
+import { normalizeEmail } from '../common/email';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { SessionsService, tokenHash } from './sessions.service';
@@ -138,7 +139,7 @@ export class AuthService {
   async requestPasswordSetup(userId: string): Promise<void> {
     const user = await this.usersService.findById(userId);
     if (!user) throw new UnauthorizedException('Account not found');
-    if (user.passwordHash) throw new ConflictException('A password is already set. Use Change password instead.');
+    if (user.passwordHash) throw new ConflictException('A password is already set. Request a reset link using forgot-password.');
     const token = this.signPurposeToken(user, 'password-reset', '30m');
     const { exp } = this.jwtService.decode<{ exp: number }>(token);
     await this.prisma.passwordResetToken.create({ data: {
@@ -153,7 +154,7 @@ export class AuthService {
     await this.prisma.$transaction(async tx => {
       await lockUsers(tx, [payload.sub]);
       const user = await tx.user.findUnique({ where: { id: payload.sub } });
-      if (!user || user.email !== payload.email) throw new UnauthorizedException('This link is no longer valid');
+      if (!user || normalizeEmail(user.email) !== normalizeEmail(payload.email ?? '')) throw new UnauthorizedException('This link is no longer valid');
       const consumed = await tx.passwordResetToken.updateMany({
         where: { userId: payload.sub, tokenHash: tokenHash(token), usedAt: null, expiresAt: { gt: new Date() } },
         data: { usedAt: new Date() },

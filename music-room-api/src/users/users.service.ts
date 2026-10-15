@@ -1,3 +1,4 @@
+import { normalizeEmail } from '../common/email';
 import { normalizeAvatar } from './avatar';
 import { lockUsers } from '../common/locks';
 import { publicProfileSelect, toPublicUser } from './user.mapper';
@@ -17,7 +18,7 @@ export class UsersService {
   }
 
   findByEmail(email: string) {
-    return this.prisma.user.findUnique({ where: { email } });
+    return this.prisma.user.findUnique({ where: { email: normalizeEmail(email) } });
   }
 
   findByFacebookId(facebookId: string) {
@@ -31,7 +32,7 @@ export class UsersService {
   createWithPassword(data: { email: string; name: string; passwordHash: string }) {
     return this.withUniqueConflict(() => this.prisma.user.create({
       data: {
-        email: data.email,
+        email: normalizeEmail(data.email),
         name: data.name,
         passwordHash: data.passwordHash,
         authProvider: AuthProvider.EMAIL,
@@ -48,7 +49,7 @@ export class UsersService {
   }) {
     return this.withUniqueConflict(() => this.prisma.user.create({
       data: {
-        email: data.email,
+        email: normalizeEmail(data.email),
         name: data.name,
         authProvider: data.provider,
         facebookId: data.facebookId,
