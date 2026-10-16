@@ -37,6 +37,18 @@ export interface QueueEntry {
 // Where a phone is, for a party that counts votes at its location
 export interface Position { latitude: number; longitude: number }
 
+// What creating a party sends. The place and the hours only for a place-and-time party.
+export interface NewParty {
+  name: string;
+  visibility: Party['visibility'];
+  voteLicense: Party['voteLicense'];
+  latitude?: number;
+  longitude?: number;
+  radiusMeters?: number;
+  voteStartsAt?: string;
+  voteEndsAt?: string;
+}
+
 // One realtime message: the whole party, as GET /parties/:id and GET /parties/:id/queue return it
 export interface PartySnapshot {
   party: Party;
@@ -52,6 +64,9 @@ export function partiesApi(client: ApiClient) {
   const id = encodeURIComponent;
   const vote = (partyId: string, entryId: string) => `/parties/${id(partyId)}/songs/${id(entryId)}/vote`;
   return {
+    create: (party: NewParty) => client.request<Party>('/parties', 'POST', party),
+    // A pending invitation is enough to see a private party, and to vote in an "invited only" one
+    invite: (partyId: string, userId: string) => client.request(`/parties/${id(partyId)}/invite`, 'POST', { userId }),
     // The queue entries I voted for in this party: what the page marks as "You voted"
     myVotes: async (partyId: string) => {
       const voted = new Set<string>();
@@ -83,6 +98,17 @@ export function progress(snapshot: { party: Pick<Party, 'nowPlaying'>; playingFo
   const durationSec = cap > 0 ? Math.min(nowPlaying.durationSec, cap) : nowPlaying.durationSec;
   const elapsedSec = Math.min(Math.max(Math.floor((snapshot.playingForMs + now - receivedAt) / 1000), 0), durationSec);
   return { elapsedSec, durationSec };
+}
+
+// The voting hours of a place-and-time party: the day, with the hours and minutes of "from" and "until".
+// "Until" not after "from" means the next day, like a party from 8 PM to 1 AM.
+export function votingWindow(day: Date, from: Date, until: Date) {
+  const start = new Date(day);
+  start.setHours(from.getHours(), from.getMinutes(), 0, 0);
+  const end = new Date(day);
+  end.setHours(until.getHours(), until.getMinutes(), 0, 0);
+  if (end <= start) end.setDate(end.getDate() + 1);
+  return { voteStartsAt: start.toISOString(), voteEndsAt: end.toISOString() };
 }
 
 // 65 seconds are shown as 1:05

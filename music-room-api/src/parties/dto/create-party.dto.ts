@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsDateString,
   IsEnum,
@@ -7,14 +8,20 @@ import {
   IsLongitude,
   IsOptional,
   IsString,
+  Max,
+  MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
 import { Visibility, VoteLicense } from '../../../generated/prisma';
 
 export class CreatePartyDto {
-  @ApiProperty()
+  @ApiProperty({ maxLength: 100 })
+  // Trimmed before validation: a name made only of spaces is refused
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()
   @MinLength(1)
+  @MaxLength(100)
   name!: string;
 
   @ApiPropertyOptional({ enum: Visibility, default: Visibility.PUBLIC })
@@ -27,12 +34,12 @@ export class CreatePartyDto {
   @IsEnum(VoteLicense)
   voteLicense?: VoteLicense;
 
-  @ApiPropertyOptional({ description: 'Requis si voteLicense = LOCATION_TIME' })
+  @ApiPropertyOptional({ description: 'Required when voteLicense is LOCATION_TIME' })
   @IsOptional()
   @IsDateString()
   voteStartsAt?: string;
 
-  @ApiPropertyOptional({ description: 'Requis si voteLicense = LOCATION_TIME' })
+  @ApiPropertyOptional({ description: 'Required when voteLicense is LOCATION_TIME; after voteStartsAt and in the future' })
   @IsOptional()
   @IsDateString()
   voteEndsAt?: string;
@@ -47,8 +54,10 @@ export class CreatePartyDto {
   @IsLongitude()
   longitude?: number;
 
-  @ApiPropertyOptional({ description: 'Rayon en mètres autour de latitude/longitude' })
+  @ApiPropertyOptional({ description: 'Voting radius in meters around latitude/longitude', minimum: 50, maximum: 5000 })
   @IsOptional()
   @IsInt()
+  @Min(50)
+  @Max(5000)
   radiusMeters?: number;
 }

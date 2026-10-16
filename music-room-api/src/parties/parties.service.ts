@@ -47,15 +47,18 @@ export class PartiesService {
           'latitude, longitude and radiusMeters are required for a LOCATION_TIME license',
         );
       }
+      if (!dto.voteStartsAt || !dto.voteEndsAt) {
+        throw new BadRequestException('voteStartsAt and voteEndsAt are required for a LOCATION_TIME license');
+      }
+      const endsAt = new Date(dto.voteEndsAt);
+      if (endsAt <= new Date(dto.voteStartsAt)) throw new BadRequestException('voteEndsAt must be after voteStartsAt');
+      if (endsAt <= new Date()) throw new BadRequestException('The voting window is already over');
     }
 
-    // Un Party dépend d'un PartyPlaylist déjà existant (FK obligatoire) :
-    // on crée donc la playlist vide en premier.
-    const partyPlaylist = await this.prisma.partyPlaylist.create({ data: {} });
-
+    // The party and its empty queue are written together: a failure leaves neither behind
     return this.prisma.party.create({
       data: {
-        ownerId,
+        owner: { connect: { id: ownerId } },
         name: dto.name,
         visibility: dto.visibility ?? Visibility.PUBLIC,
         voteLicense: dto.voteLicense ?? VoteLicense.EVERYONE,
@@ -64,7 +67,7 @@ export class PartiesService {
         latitude: dto.latitude,
         longitude: dto.longitude,
         radiusMeters: dto.radiusMeters,
-        partyPlaylistId: partyPlaylist.id,
+        partyPlaylist: { create: {} },
       },
     });
   }

@@ -322,3 +322,106 @@ describe('Party lists (GET /parties and GET /parties/mine)', () => {
     expect((nextPage.body as Card[]).map((entry) => entry.id)).toEqual([first.id]);
   });
 });
+
+// A place-and-time party: votes count only within radiusMeters of the venue, between the two dates
+const venue = { latitude: 33.5731, longitude: -7.5898 };
+const near = { latitude: 33.5735, longitude: -7.5898 }; // about 45 m north of the venue
+const far = { latitude: 33.5831, longitude: -7.5898 }; // about 1.1 km north of the venue
+const hours = (from: number, to: number) => ({
+  voteStartsAt: new Date(Date.now() + from * 3_600_000).toISOString(),
+  voteEndsAt: new Date(Date.now() + to * 3_600_000).toISOString(),
+});
+const placeAndTime = (changes: Record<string, unknown> = {}) => ({
+  name: `Venue ${randomUUID()}`, voteLicense: 'LOCATION_TIME', ...venue, radiusMeters: 200, ...hours(-1, 2), ...changes,
+});
+
+describe('Creating a party (POST /parties)', () => {
+  it('trims the name, and refuses one that is empty, only spaces, or longer than 100 characters', async () => {
+    const owner = await account('Owner');
+    const created = await request('POST', '/parties', { name: '  After Hours  ' }, owner.token);
+    expect(created.status).toBe(201);
+    expect(created.body.name).toBe('After Hours');
+    expect((await request('POST', '/parties', { name: 'n'.repeat(100) }, owner.token)).status).toBe(201);
+    for (const name of ['', '   ', 'n'.repeat(101)]) {
+      expect((await request('POST', '/parties', { name }, owner.token)).status).toBe(400);
+    }
+  });
+
+  it('creates a place-and-time party with its area and its hours', async () => {
+    const owner = await account('Owner');
+    const body = placeAndTime();
+    const created = await request('POST', '/parties', body, owner.token);
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({
+      voteLicense: 'LOCATION_TIME', ...venue, radiusMeters: 200, voteStartsAt: body.voteStartsAt, voteEndsAt: body.voteEndsAt,
+    });
+  });
+
+  it('refuses a place-and-time party without its hours, or with hours reversed or already over', async () => {
+    const owner = await account('Owner');
+    const { voteEndsAt } = hours(-1, 2);
+    for (const body of [
+      placeAndTime({ voteStartsAt: undefined }),
+      placeAndTime({ voteEndsAt: undefined }),
+      placeAndTime(hours(2, 1)),
+      placeAndTime({ voteStartsAt: voteEndsAt, voteEndsAt }),
+      placeAndTime(hours(-3, -1)),
+    ]) {
+      expect((await request('POST', '/parties', body, owner.token)).status).toBe(400);
+    }
+  });
+
+  it('refuses a place-and-time party without its area, or with a radius outside 50 m to 5 km', async () => {
+    const owner = await account('Owner');
+    for (const body of [
+      placeAndTime({ latitude: undefined }), placeAndTime({ longitude: undefined }), placeAndTime({ radiusMeters: undefined }),
+      placeAndTime({ radiusMeters: 49 }), placeAndTime({ radiusMeters: 5001 }), placeAndTime({ radiusMeters: 100.5 }),
+    ]) {
+      expect((await request('POST', '/parties', body, owner.token)).status).toBe(400);
+    }
+    for (const radiusMeters of [50, 5000]) {
+      expect((await request('POST', '/parties', placeAndTime({ radiusMeters }), owner.token)).status).toBe(201);
+    }
+  });
+});
+
+describe('Voting in a place-and-time party', () => {
+  async function venueParty(changes: Record<string, unknown> = {}) {
+    const owner = await account('Owner');
+    const created = await request('POST', '/parties', placeAndTime(changes), owner.token);
+    expect(created.status).toBe(201);
+    const suggested = await request('POST', `/parties/${created.body.id}/songs`, { externalId: '3135556' }, owner.token);
+    expect(suggested.status).toBe(201);
+    return { id: created.body.id as string, entry: suggested.body.id as string };
+  }
+  const voteAt = (id: string, entry: string, user: Account, position: object) =>
+    request('POST', `/parties/${id}/songs/${entry}/vote`, position, user.token);
+
+  it('counts the vote of someone inside the area during the hours', async () => {
+    const { id, entry } = await venueParty();
+    expect((await voteAt(id, entry, await account('Guest'), near)).status).toBe(201);
+  });
+
+  it('refuses a vote without a position, or from outside the area', async () => {
+    const { id, entry } = await venueParty();
+    const guest = await account('Guest');
+    expect((await voteAt(id, entry, guest, {})).status).toBe(400);
+    expect((await voteAt(id, entry, guest, far)).status).toBe(403);
+  });
+
+  it('refuses a vote before the hours start, and after they end', async () => {
+    const guest = await account('Guest');
+    const early = await venueParty(hours(1, 2));
+    expect((await voteAt(early.id, early.entry, guest, near)).status).toBe(403);
+    const late = await venueParty();
+    await admin.$executeRawUnsafe(`UPDATE "${schema}"."Party" SET "voteStartsAt" = now() - interval '3 hours', "voteEndsAt" = now() - interval '1 hour' WHERE id = $1`, late.id);
+    expect((await voteAt(late.id, late.entry, guest, near)).status).toBe(403);
+  });
+
+  it('lets a voter take back their vote from anywhere, at any time: removing needs no position', async () => {
+    const { id, entry } = await venueParty();
+    const guest = await account('Guest');
+    expect((await voteAt(id, entry, guest, near)).status).toBe(201);
+    expect((await unvote(id, entry, guest)).status).toBe(200);
+  });
+});

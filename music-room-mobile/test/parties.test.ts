@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiClient, type TokenStorage } from '../src/api/client.ts';
-import { clock, partiesApi, progress, type Song } from '../src/api/parties.ts';
+import { clock, partiesApi, progress, votingWindow, type Song } from '../src/api/parties.ts';
 
 const user = { id: 'alice', email: 'alice@example.test', name: 'Alice', musicPreferences: [] };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -29,12 +29,16 @@ test('party actions name the party and the queue entry in the URL, with the meth
   const f = fixture(() => json({}));
   await f.client.login(user.email, 'password');
   const api = partiesApi(f.client);
+  await api.create({ name: 'After Hours', visibility: 'PRIVATE', voteLicense: 'INVITED_ONLY' });
+  await api.invite('party 1', 'user/2');
   await api.suggest('party 1', '3135556');
   await api.vote('party 1', 'entry/2');
   await api.vote('party 1', 'entry/2', { latitude: 33.5731, longitude: -7.5898 });
   await api.unvote('party 1', 'entry/2');
   await api.next('party 1', 7);
   assert.deepEqual(f.calls.slice(1).map(c => [c.url.pathname, c.init.method, c.init.body === undefined ? null : JSON.parse(String(c.init.body))]), [
+    ['/parties', 'POST', { name: 'After Hours', visibility: 'PRIVATE', voteLicense: 'INVITED_ONLY' }],
+    ['/parties/party%201/invite', 'POST', { userId: 'user/2' }],
     ['/parties/party%201/songs', 'POST', { externalId: '3135556' }],
     ['/parties/party%201/songs/entry%2F2/vote', 'POST', {}],
     ['/parties/party%201/songs/entry%2F2/vote', 'POST', { latitude: 33.5731, longitude: -7.5898 }],
@@ -128,4 +132,23 @@ test('there is no progress without a song, or without the server\'s measure', ()
 
 test('durations are shown as minutes and two-digit seconds', () => {
   assert.deepEqual([0, 5, 59, 60, 245, 600, 3725].map(clock), ['0:00', '0:05', '0:59', '1:00', '4:05', '10:00', '62:05']);
+});
+
+test('the voting hours take the day of the party and the hours and minutes of "from" and "until"', () => {
+  const day = new Date(2026, 9, 16, 9, 41); // the time of day of "day" does not count
+  const window = votingWindow(day, new Date(2000, 0, 1, 18, 30, 45), new Date(2000, 0, 1, 23, 15));
+  assert.deepEqual(window, {
+    voteStartsAt: new Date(2026, 9, 16, 18, 30).toISOString(),
+    voteEndsAt: new Date(2026, 9, 16, 23, 15).toISOString(),
+  });
+});
+
+test('"until" earlier than "from", or the same, ends the next day', () => {
+  const day = new Date(2026, 9, 31);
+  assert.deepEqual(votingWindow(day, new Date(2000, 0, 1, 20, 0), new Date(2000, 0, 1, 1, 0)), {
+    voteStartsAt: new Date(2026, 9, 31, 20, 0).toISOString(),
+    voteEndsAt: new Date(2026, 10, 1, 1, 0).toISOString(),
+  });
+  assert.equal(votingWindow(day, new Date(2000, 0, 1, 20, 0), new Date(2000, 0, 1, 20, 0)).voteEndsAt,
+    new Date(2026, 10, 1, 20, 0).toISOString());
 });
