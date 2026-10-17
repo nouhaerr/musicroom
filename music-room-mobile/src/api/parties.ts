@@ -37,6 +37,17 @@ export interface QueueEntry {
 // Where a phone is, for a party that counts votes at its location
 export interface Position { latitude: number; longitude: number }
 
+// A party as the room lists give it: with who hosts it, and how long its song has been playing when the server answered
+export type PartyCard = Party & { owner: { id: string; name: string }; playingForMs: number | null };
+
+// The chips of the Discover page, and what each asks the server
+export type RoomFilter = 'public' | 'private' | 'location';
+const ROOM_FILTERS: Record<RoomFilter, string> = {
+  public: 'visibility=PUBLIC',
+  private: 'visibility=PRIVATE',
+  location: 'voteLicense=LOCATION_TIME',
+};
+
 // What creating a party sends. The place and the hours only for a place-and-time party.
 export interface NewParty {
   name: string;
@@ -58,12 +69,19 @@ export interface PartySnapshot {
 }
 
 const VOTES_PAGE_SIZE = 100; // the largest page the server gives
+export const ROOMS_PAGE_SIZE = 20;
 
 // The calls of the party page
 export function partiesApi(client: ApiClient) {
   const id = encodeURIComponent;
   const vote = (partyId: string, entryId: string) => `/parties/${id(partyId)}/songs/${id(entryId)}/vote`;
   return {
+    // A page of the rooms of one chip, newest first; with a search, only those whose name contains it
+    list: async (page: number, search: string, filter: RoomFilter) => {
+      const rooms = await client.request<PartyCard[]>(`/parties?page=${page}&limit=${ROOMS_PAGE_SIZE}&${ROOM_FILTERS[filter]}${search ? `&q=${id(search)}` : ''}`);
+      if (!Array.isArray(rooms)) throw new Error('Invalid rooms response.');
+      return rooms;
+    },
     create: (party: NewParty) => client.request<Party>('/parties', 'POST', party),
     // A pending invitation is enough to see a private party, and to vote in an "invited only" one
     invite: (partyId: string, userId: string) => client.request(`/parties/${id(partyId)}/invite`, 'POST', { userId }),

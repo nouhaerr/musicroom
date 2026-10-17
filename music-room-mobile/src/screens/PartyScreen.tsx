@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
-import { faCheck, faChevronUp } from '@fortawesome/free-solid-svg-icons';
+import { faCheck, faChevronUp, faPlus } from '@fortawesome/free-solid-svg-icons';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { ApiError, type ApiClient } from '../api/client';
 import { clock, partiesApi, progress, type PartySnapshot, type QueueEntry } from '../api/parties';
 import type { GoneReason, Live } from '../realtime/live';
 import { currentPosition, recentPosition } from '../location';
-import { Action, styles } from '../components/ProfileUI';
+import { Button } from '../components/FormControls';
+import { styles } from '../components/ProfileUI';
 import { SuggestScreen } from './SuggestScreen';
 
 // Why the page can no longer show the party, in words for the user
@@ -119,12 +120,12 @@ export function PartyScreen({ client, live, partyId, onBack }: {
   if (gone) {
     return <View style={styles.section}>
       <Text accessibilityRole="alert" style={styles.error}>{GONE[gone]}</Text>
-      <Action title="Back" secondary onPress={onBack} />
+      <Button title="← Back" secondary onPress={onBack} />
     </View>;
   }
   if (!snapshot) {
     return <View style={styles.section}>
-      <Action title="← Back" secondary onPress={onBack} />
+      <Button title="← Back" secondary onPress={onBack} />
       <ActivityIndicator color="#B7F576" accessibilityLabel="Connecting to the party" />
       <Text style={styles.text}>Connecting…</Text>
     </View>;
@@ -134,13 +135,13 @@ export function PartyScreen({ client, live, partyId, onBack }: {
   const { party, queue, queueLength } = snapshot;
   const playing = progress(snapshot, receivedAt, now);
   return <View style={styles.section}>
-    <Action title="← Back" secondary disabled={busy} onPress={onBack} />
+    <Button title="← Back" secondary disabled={busy} onPress={onBack} />
     <Text style={styles.title}>{party.name}</Text>
-    <Text style={styles.label}>{party.visibility === 'PUBLIC' ? 'Public' : 'Private'}</Text>
+    <Text style={styles.text}>{party.visibility === 'PUBLIC' ? 'Public' : 'Private'}</Text>
     {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
 
     <View style={p.card}>
-      <Text style={styles.label}>NOW PLAYING</Text>
+      <Text style={p.eyebrow}>NOW PLAYING</Text>
       {party.nowPlaying ? <View style={p.row}>
         {party.nowPlaying.thumbnailUrl ? <Image source={{ uri: party.nowPlaying.thumbnailUrl }} style={p.cover} /> : null}
         <View style={p.grow}>
@@ -159,12 +160,12 @@ export function PartyScreen({ client, live, partyId, onBack }: {
         </View>
       </> : null}
       {client.user?.id === party.ownerId ?
-        <Action title="Next song" disabled={busy} onPress={() => void action(() => api.next(partyId, party.playbackVersion))} /> : null}
+        <Button title="Next song" secondary disabled={busy} onPress={() => void action(() => api.next(partyId, party.playbackVersion))} /> : null}
     </View>
 
     <View style={p.between}>
       <Text style={styles.title}>Up next</Text>
-      <Text style={styles.label}>{queueLength} {queueLength === 1 ? 'track' : 'tracks'}</Text>
+      <Text style={p.tracks}>{queueLength} {queueLength === 1 ? 'track' : 'tracks'}</Text>
     </View>
     {locating ? <View style={p.row}>
       <ActivityIndicator color="#B7F576" />
@@ -190,11 +191,13 @@ export function PartyScreen({ client, live, partyId, onBack }: {
         </Pressable>
       </View>;
     })}
-    <Action title="+ Suggest a track" onPress={() => setSuggesting(true)} />
+    <Button title="Suggest a track" icon={faPlus} accent onPress={() => setSuggesting(true)} />
   </View>;
 }
 
 const p = StyleSheet.create({
+  eyebrow: { color: '#A98BFF', fontSize: 13, fontWeight: '700', letterSpacing: 0.5 },
+  tracks: { color: '#A9B6FF', fontWeight: '600' },
   card: { backgroundColor: '#171A25', borderRadius: 16, padding: 16, gap: 10 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   grow: { flex: 1, gap: 2 },

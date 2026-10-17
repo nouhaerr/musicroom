@@ -152,3 +152,23 @@ test('"until" earlier than "from", or the same, ends the next day', () => {
   assert.equal(votingWindow(day, new Date(2000, 0, 1, 20, 0), new Date(2000, 0, 1, 20, 0)).voteEndsAt,
     new Date(2026, 10, 1, 20, 0).toISOString());
 });
+
+test('the room list asks for one page of one chip, and sends the search only when there is one', async () => {
+  const f = fixture(() => json([]));
+  await f.client.login(user.email, 'password');
+  const api = partiesApi(f.client);
+  await api.list(2, '', 'public');
+  await api.list(1, 'rüfüs & co/2?', 'private');
+  await api.list(1, '', 'location');
+  assert.deepEqual(f.calls.slice(1).map(c => [c.url.pathname, Object.fromEntries(c.url.searchParams)]), [
+    ['/parties', { page: '2', limit: '20', visibility: 'PUBLIC' }],
+    ['/parties', { page: '1', limit: '20', visibility: 'PRIVATE', q: 'rüfüs & co/2?' }],
+    ['/parties', { page: '1', limit: '20', voteLicense: 'LOCATION_TIME' }],
+  ]);
+});
+
+test('a room list answer that is not a list is refused instead of being shown', async () => {
+  const f = fixture(() => json({ rooms: [] }));
+  await f.client.login(user.email, 'password');
+  await assert.rejects(partiesApi(f.client).list(1, '', 'public'), /Invalid rooms response/);
+});

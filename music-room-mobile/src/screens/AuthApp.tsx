@@ -2,7 +2,7 @@ import { openEmailInbox } from '../auth/open-email';
 import { acquireFacebookCredential } from '../auth/native-facebook';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, ImageBackground, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Image, ImageBackground, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Linking from 'expo-linking';
@@ -12,7 +12,7 @@ import { secureStorage } from '../storage';
 import { AccountListScreen } from './AccountListScreen';
 import { ProfileScreen } from './ProfileScreen';
 import { PeopleScreen } from './PeopleScreen';
-import { LiveDebugScreen } from './LiveDebugScreen';
+import { DiscoverScreen } from './DiscoverScreen';
 import { Live } from '../realtime/live';
 import { acquireGoogleIdToken } from '../auth/native-google';
 import { passwordValidation } from '../auth/password-validation';
@@ -204,6 +204,12 @@ function Sonora() {
     setLive(created);
     return () => { created.destroy(); setLive(null); };
   }, [client]);
+  // Back to the front: the phone may have cut the live connection while the app was in the background
+  useEffect(() => {
+    if (!live) return;
+    const subscription = AppState.addEventListener('change', state => { if (state === 'active') live.resume(); });
+    return () => subscription.remove();
+  }, [live]);
   const [areaBusy, setAreaBusy] = useState(false);
 
   useEffect(() => {
@@ -421,7 +427,7 @@ function Sonora() {
                 setNotice(warning || 'Backend address saved.');
               }} /> : area === 'people' ?
               <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} /> :
-              area === 'rooms' ? (live ? <LiveDebugScreen key={user.id} client={client!} live={live} /> : null) :
+              area === 'rooms' ? (live ? <DiscoverScreen key={user.id} client={client!} live={live} /> : null) :
               <AccountListScreen key={area} client={client!} area={area} />}
           </> : <>
             {screen === 'settings' ? <>

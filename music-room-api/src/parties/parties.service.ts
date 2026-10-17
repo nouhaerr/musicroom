@@ -11,6 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, ResourceType, Visibility, VoteLicense, Party } from '../../generated/prisma';
 import { distanceMeters } from '../common/geo';
 import { CreatePartyDto } from './dto/create-party.dto';
+import { ListPartiesDto } from './dto/list-parties.dto';
 import { NextTrackDto, SuggestSongDto, VoteDto } from './dto/party-actions.dto';
 import { SongsService } from '../songs/songs.service';
 import { RealtimeService } from '../realtime/realtime.service';
@@ -24,6 +25,8 @@ const QUEUE_ORDER: Prisma.PartySongOrderByWithRelationInput[] = [
 ];
 // What each queue entry comes with, in GET /queue and in the realtime snapshot
 const QUEUE_ENTRY = { song: true, _count: { select: { votes: true } } } satisfies Prisma.PartySongInclude;
+// In a database LIKE pattern, % and _ are wildcards: a search escapes them, and the escape character itself
+const literal = (text: string) => text.replace(/[\\%_]/g, (character) => `\\${character}`);
 const SNAPSHOT_QUEUE_SIZE = 100; // a realtime snapshot holds as many entries as GET /queue's largest page
 // What each party comes with in the lists: who hosts it (id and name, nothing else) and what is playing
 const PARTY_CARD = { owner: { select: { id: true, name: true } }, nowPlaying: true } satisfies Prisma.PartyInclude;
@@ -72,15 +75,25 @@ export class PartiesService {
     });
   }
 
-  findPublic(userId: string, query: PaginationDto) {
-    return this.prisma.party.findMany({
-      where: { OR: [
-        { visibility: Visibility.PUBLIC }, { ownerId: userId },
-        { invitations: { some: { invitedUserId: userId, ...activeInvitation } } },
-      ] },
+  async findPublic(userId: string, query: ListPartiesDto) {
+    const rooms = await this.prisma.party.findMany({
+      where: {
+        OR: [
+          { visibility: Visibility.PUBLIC }, { ownerId: userId },
+          { invitations: { some: { invitedUserId: userId, ...activeInvitation } } },
+        ],
+        // A search keeps the rule above: only among the rooms this user may see
+        name: query.q ? { contains: literal(query.q), mode: 'insensitive' as const } : undefined,
+        // The filters of the Discover page; a public room with the location & time rule matches both
+        visibility: query.visibility,
+        voteLicense: query.voteLicense,
+      },
       include: PARTY_CARD,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], ...paginate(query),
     });
+    // How long each current song has been playing, measured here like in the snapshot: a phone never compares clocks
+    const now = Date.now();
+    return rooms.map((room) => ({ ...room, playingForMs: room.nowPlayingStartedAt ? now - room.nowPlayingStartedAt.getTime() : null }));
   }
 
   findMine(userId: string, query: PaginationDto) {

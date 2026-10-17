@@ -6,7 +6,8 @@ import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import type { ApiClient } from '../api/client';
 import { partiesApi, type QueueEntry } from '../api/parties';
 import { songsApi, type CatalogTrack } from '../api/songs';
-import { Action, styles } from '../components/ProfileUI';
+import { Button } from '../components/FormControls';
+import { styles } from '../components/ProfileUI';
 
 const SEARCH_DELAY_MS = 400; // the search starts once the typing stops for this long
 
@@ -51,7 +52,7 @@ export function SuggestScreen({ client, partyId, queue, onBack }: {
   }
 
   return <View style={styles.section}>
-    <Action title="← Back" secondary onPress={onBack} />
+    <Button title="← Back" secondary onPress={onBack} />
     <Text style={styles.title}>Suggest a track</Text>
     <TextInput accessibilityLabel="Search songs" placeholder="Search songs" placeholderTextColor="#737D91" value={text} onChangeText={setText}
       maxLength={100} autoFocus autoCorrect={false} autoCapitalize="none" returnKeyType="search" style={styles.input} />

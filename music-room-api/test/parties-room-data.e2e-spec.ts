@@ -293,7 +293,7 @@ describe('Party lists (GET /parties and GET /parties/mine)', () => {
 
     const detail = (await request('GET', `/parties/${room.id}`, undefined, owner.token)).body;
     const found = await card('/parties', room.id, owner);
-    expect(found).toEqual({ ...detail, owner: { id: owner.id, name: 'Owner' } });
+    expect(found).toEqual({ ...detail, owner: { id: owner.id, name: 'Owner' }, playingForMs: expect.any(Number) });
     expect(found).toMatchObject({ id: room.id, name: room.name, visibility: 'PUBLIC', voteLicense: 'EVERYONE', playbackVersion: 1 });
   });
 
@@ -423,5 +423,111 @@ describe('Voting in a place-and-time party', () => {
     const guest = await account('Guest');
     expect((await voteAt(id, entry, guest, near)).status).toBe(201);
     expect((await unvote(id, entry, guest)).status).toBe(200);
+  });
+});
+
+describe('Searching the room list (GET /parties?q=)', () => {
+  const named = (owner: Account, name: string, visibility: 'PUBLIC' | 'PRIVATE' = 'PUBLIC') =>
+    request('POST', '/parties', { name, visibility }, owner.token).then((created) => created.body.id as string);
+  const search = async (user: Account, q: string) => {
+    const found = await request('GET', `/parties?limit=100&q=${encodeURIComponent(q)}`, undefined, user.token);
+    expect(found.status).toBe(200);
+    return (found.body as Card[]).map((entry) => entry.id);
+  };
+
+  it('finds the rooms whose name contains the search, in any case', async () => {
+    const owner = await account('Owner');
+    const tag = randomUUID().slice(0, 8);
+    const sunset = await named(owner, `Sunset ${tag}`);
+    const morning = await named(owner, `Morning ${tag}`);
+    expect(await search(owner, `sUnSeT ${tag}`)).toEqual([sunset]);
+    expect((await search(owner, tag.toUpperCase())).sort()).toEqual([sunset, morning].sort());
+  });
+
+  it('only searches among the rooms the user may see', async () => {
+    const owner = await account('Owner');
+    const guest = await account('Guest');
+    const stranger = await account('Stranger');
+    const tag = randomUUID().slice(0, 8);
+    const hidden = await named(owner, `Secret ${tag}`, 'PRIVATE');
+    expect((await invite(hidden, owner, guest)).status).toBe(201);
+    expect(await search(stranger, tag)).toEqual([]);
+    expect(await search(guest, tag)).toEqual([hidden]);
+    expect(await search(owner, tag)).toEqual([hidden]);
+  });
+
+  it('takes %, _ and the backslash as plain characters, not as wildcards', async () => {
+    const owner = await account('Owner');
+    const tag = randomUUID().slice(0, 8);
+    const percent = await named(owner, `100% ${tag}`);
+    const underscore = await named(owner, `a_b ${tag}`);
+    await named(owner, `1000 ${tag}`);
+    await named(owner, `axb ${tag}`);
+    expect(await search(owner, `100% ${tag}`)).toEqual([percent]);
+    expect(await search(owner, `a_b ${tag}`)).toEqual([underscore]);
+    const backslash = await named(owner, `a\\b ${tag}`);
+    await named(owner, `ab ${tag}`);
+    expect(await search(owner, `a\\b ${tag}`)).toEqual([backslash]);
+  });
+
+  it('lists every room for an empty or blank search, and refuses one longer than 100 characters', async () => {
+    const owner = await account('Owner');
+    const room = await named(owner, `Any ${randomUUID()}`);
+    expect(await search(owner, '')).toContain(room);
+    expect(await search(owner, '   ')).toContain(room);
+    expect((await request('GET', `/parties?q=${'a'.repeat(101)}`, undefined, owner.token)).status).toBe(400);
+    expect((await request('GET', '/parties?q=a&q=b', undefined, owner.token)).status).toBe(400);
+  });
+});
+
+describe('Filtering the room list (GET /parties?visibility=&voteLicense=)', () => {
+  const ids = async (user: Account, query: string) => {
+    const found = await request('GET', `/parties?limit=100&${query}`, undefined, user.token);
+    expect(found.status).toBe(200);
+    return (found.body as Card[]).map((entry) => entry.id);
+  };
+  const created = (owner: Account, body: object) => request('POST', '/parties', body, owner.token).then((answer) => answer.body.id as string);
+
+  it('shows only the public rooms, or only the private rooms the user may see', async () => {
+    const owner = await account('Owner');
+    const guest = await account('Guest');
+    const stranger = await account('Stranger');
+    const tag = randomUUID().slice(0, 8);
+    const open = await created(owner, { name: `Open ${tag}` });
+    const closed = await created(owner, { name: `Closed ${tag}`, visibility: 'PRIVATE' });
+    expect((await invite(closed, owner, guest)).status).toBe(201);
+    expect(await ids(guest, `visibility=PUBLIC&q=${tag}`)).toEqual([open]);
+    expect(await ids(guest, `visibility=PRIVATE&q=${tag}`)).toEqual([closed]);
+    expect(await ids(stranger, `visibility=PRIVATE&q=${tag}`)).toEqual([]);
+  });
+
+  it('shows the location & time rooms, a public one also among the public rooms', async () => {
+    const owner = await account('Owner');
+    const tag = randomUUID().slice(0, 8);
+    const atVenue = await created(owner, placeAndTime({ name: `Venue ${tag}` }));
+    const plain = await created(owner, { name: `Plain ${tag}` });
+    expect(await ids(owner, `voteLicense=LOCATION_TIME&q=${tag}`)).toEqual([atVenue]);
+    expect((await ids(owner, `visibility=PUBLIC&q=${tag}`)).sort()).toEqual([atVenue, plain].sort());
+  });
+
+  it('refuses a filter value that does not exist', async () => {
+    const owner = await account('Owner');
+    for (const query of ['visibility=SECRET', 'voteLicense=NEARBY']) {
+      expect((await request('GET', `/parties?${query}`, undefined, owner.token)).status).toBe(400);
+    }
+  });
+});
+
+describe('How long the current song has been playing, in the room list', () => {
+  it('is null when nothing plays, and measured by the server once a song plays', async () => {
+    const owner = await account('Owner');
+    const room = await party(owner, { songs: ['3135556'] });
+    const listed = async () => (await request('GET', `/parties?limit=100&q=${encodeURIComponent(room.name)}`, undefined, owner.token)).body[0];
+    expect((await listed()).playingForMs).toBeNull();
+    expect((await request('POST', `/parties/${room.id}/next`, { expectedPlaybackVersion: 0 }, owner.token)).status).toBe(201);
+    await admin.$executeRawUnsafe(`UPDATE "${schema}"."Party" SET "nowPlayingStartedAt" = now() - interval '5 minutes' WHERE id = $1`, room.id);
+    const playingFor = (await listed()).playingForMs;
+    expect(playingFor).toBeGreaterThanOrEqual(300_000);
+    expect(playingFor).toBeLessThan(310_000);
   });
 });
