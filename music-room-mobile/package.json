@@ -9,6 +9,7 @@
     "@fortawesome/free-regular-svg-icons": "^7.3.1",
     "@fortawesome/free-solid-svg-icons": "^7.3.1",
     "@fortawesome/react-native-fontawesome": "^1.0.0",
+    "@react-native-community/datetimepicker": "9.1.0",
     "expo": "~57.0.27",
     "expo-build-properties": "~57.0.22",
     "expo-constants": "~57.0.21",
@@ -18,6 +19,7 @@
     "expo-image-picker": "~57.0.20",
     "expo-intent-launcher": "~57.0.1",
     "expo-linking": "~57.0.12",
+    "expo-location": "~57.0.21",
     "expo-secure-store": "~57.0.4",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
@@ -26,7 +28,9 @@
     "react-native-nitro-google-signin": "2.3.0",
     "react-native-nitro-modules": "0.37.0",
     "react-native-safe-area-context": "~5.7.0",
-    "react-native-svg": "15.15.4"
+    "react-native-svg": "15.15.4",
+    "react-native-webview": "13.16.1",
+    "socket.io-client": "^4.8.4"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

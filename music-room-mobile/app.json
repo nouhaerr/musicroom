@@ -20,7 +20,8 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-secure-store"
+      "expo-secure-store",
+      ["expo-location", { "locationWhenInUsePermission": "Sonora uses your position to check that you are at the party before counting your vote." }]
     ]
   }
 }

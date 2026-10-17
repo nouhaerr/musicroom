@@ -14,6 +14,7 @@ import { PartiesModule } from './parties/parties.module';
 import { PlaylistsModule } from './playlists/playlists.module';
 import { validateEnvironment } from './config/environment';
 import { SongsModule } from './songs/songs.module';
+import { RealtimeModule } from './realtime/realtime.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { SongsModule } from './songs/songs.module';
     PartiesModule,
     PlaylistsModule,
     SongsModule,
+    RealtimeModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

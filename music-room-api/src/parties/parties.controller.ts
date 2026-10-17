@@ -1,8 +1,9 @@
 import { PaginationDto } from '../common/pagination.dto';
 import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { PartiesService } from './parties.service';
 import { CreatePartyDto } from './dto/create-party.dto';
+import { ListPartiesDto } from './dto/list-parties.dto';
 import { InviteUserDto, NextTrackDto, SuggestSongDto, VoteDto } from './dto/party-actions.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -21,7 +22,7 @@ export class PartiesController {
   }
 
   @Get()
-  findPublic(@CurrentUser() user: PublicUser, @Query() query: PaginationDto) {
+  findPublic(@CurrentUser() user: PublicUser, @Query() query: ListPartiesDto) {
     return this.partiesService.findPublic(user.id, query);
   }
 
@@ -82,6 +83,16 @@ export class PartiesController {
   ) {
     return this.partiesService.removeVote(id, partySongId, user.id);
   }
+
+  @Get(':id/votes/mine')
+  @ApiOkResponse({
+    description: 'Ids of the queue entries (partySongId) the caller has voted for in this party, oldest vote first',
+    schema: { type: 'array', items: { type: 'string', format: 'uuid' } },
+  })
+  myVotes(@CurrentUser() user: PublicUser, @Param('id') id: string, @Query() query: PaginationDto) {
+    return this.partiesService.myVotes(id, user.id, query);
+  }
+
   @Delete(':id/invitations/:userId')
   removeInvite(@CurrentUser() user: PublicUser, @Param('id') id: string, @Param('userId') userId: string) {
     return this.partiesService.removeInvite(id, user.id, userId);
