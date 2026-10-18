@@ -10,6 +10,7 @@ import Constants from 'expo-constants';
 import { ApiClient, ApiError, normalizeBaseUrl, tokenFromInput, type User } from '../api/client';
 import { secureStorage } from '../storage';
 import { AccountListScreen } from './AccountListScreen';
+import { DevicesScreen } from './DevicesScreen';
 import { ProfileScreen } from './ProfileScreen';
 import { PeopleScreen } from './PeopleScreen';
 import { acquireGoogleIdToken } from '../auth/native-google';
@@ -410,7 +411,8 @@ function Sonora() {
                 setServer(url); setClient(createClient(url)); navigate('login'); setArea('profile');
                 setNotice(warning || 'Backend address saved.');
               }} /> : area === 'people' ?
-              <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} /> :
+              <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} onBack={() => setArea('profile')} /> : area === 'devices' ?
+              <DevicesScreen key={user.id} client={client!} onBusy={setAreaBusy} /> :
               <AccountListScreen key={area} client={client!} area={area} />}
           </> : <>
             {screen === 'settings' ? <>

@@ -1,20 +1,21 @@
 import { ProfileAvatar } from '../components/ProfileAvatar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
+import { faArrowLeft, faChevronRight, faMagnifyingGlass, faMusic, faUserGroup, faUserPlus } from '@fortawesome/free-solid-svg-icons';
 import type { ApiClient } from '../api/client';
 import { PAGE_SIZE, visibleProfileSections, type FriendRequest, type PublicProfile } from '../api/profiles';
 import { socialApi } from '../api/social';
-import { Action, Info, Input, styles } from '../components/ProfileUI';
 
 type Tab = 'search' | 'friends' | 'requests';
-const tabLabels: Record<Tab, string> = { search: 'Rechercher', friends: 'Mes amis', requests: 'Demandes' };
+const tabLabels: Record<Tab, string> = { friends: 'Friends', requests: 'Requests', search: 'Discover' };
 
-export function PeopleScreen({ client, userId, onBusy }: {
-  client: ApiClient; userId: string; onBusy: (busy: boolean) => void;
+export function PeopleScreen({ client, userId, onBusy, onBack }: {
+  client: ApiClient; userId: string; onBusy: (busy: boolean) => void; onBack: () => void;
 }) {
   const api = useMemo(() => socialApi(client), [client]);
-  const [tab, setTab] = useState<Tab>('search');
+  const [tab, setTab] = useState<Tab>('friends');
   const [q, setQ] = useState('');
   const [genre, setGenre] = useState('');
   const [filters, setFilters] = useState({ q: '', genre: '' });
@@ -74,9 +75,9 @@ export function PeopleScreen({ client, userId, onBusy }: {
     });
   }
   function remove(person: PublicProfile) {
-    Alert.alert('Retirer cet ami ?', `${person.name} n’aura plus accès à tes informations réservées aux amis.`, [
-      { text: 'Annuler', style: 'cancel' },
-      { text: 'Retirer', style: 'destructive', onPress: () => {
+    Alert.alert('Remove friend?', `${person.name} will no longer have access to your friends-only information.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: () => {
         if (alive.current) void action(async () => { await api.remove(person.id); refresh('Friend removed.'); });
       } },
     ]);
@@ -85,62 +86,111 @@ export function PeopleScreen({ client, userId, onBusy }: {
     setRows([]); setSelected(null); setTab(next); setPage(1); setNotice(''); setError(''); setReload(value => value + 1);
   }
 
-  return <View style={styles.section}>
-    <Text style={styles.title}>Amis et découvertes</Text>
-    <View style={styles.row}>{(Object.keys(tabLabels) as Tab[]).map(key =>
-      <Action key={key} title={tabLabels[key]} secondary={tab !== key} disabled={disabled} onPress={() => changeTab(key)} />
-    )}</View>
-    {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
-    {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{notice}</Text> : null}
-    {disabled ? <ActivityIndicator color="#B7F576" accessibilityLabel="Chargement des personnes" /> : null}
+  const button = (title: string, onPress: () => void, secondary = false, blocked = false) =>
+    <Pressable accessibilityRole="button" disabled={disabled || blocked} onPress={onPress}
+      style={({ pressed }) => [s.button, secondary && s.secondary, (disabled || blocked || pressed) && s.dim]}>
+      <Text style={s.buttonText}>{title}</Text>
+    </Pressable>;
+  const genres = (person: PublicProfile) => <View style={s.chips}>
+    {person.musicPreferences.length ? person.musicPreferences.map(g => <View key={g} style={s.chip}><Text style={s.chipText}>{g}</Text></View>) : <Text style={s.muted}>No music preferences yet.</Text>}
+  </View>;
+  const identity = (person: PublicProfile) => <Pressable accessibilityRole="button" accessibilityLabel={`View ${person.name}'s profile`} disabled={disabled} onPress={() => openProfile(person)} style={s.identity}>
+    <ProfileAvatar name={person.name} info={person.publicInfo} size={48} />
+    <View style={s.grow}><Text style={s.name}>{person.name}</Text>{person.username ? <Text style={s.muted}>@{person.username}</Text> : null}</View>
+    <FontAwesomeIcon icon={faChevronRight} size={14} color="#8589a1" />
+  </Pressable>;
+  const count = rows.filter(row => tab === 'requests' || row.id !== userId).length;
+  return <View style={s.screen}>
+    <Pressable accessibilityRole="button" disabled={disabled} onPress={selected ? () => setSelected(null) : onBack} style={s.back}>
+      <FontAwesomeIcon icon={faArrowLeft} size={16} color="#aeb5ff" /><Text style={s.backText}>{selected ? 'Back to people' : 'Back to profile'}</Text>
+    </Pressable>
+    <View><Text style={s.eyebrow}>FRIENDS & DISCOVERY</Text><Text style={s.heading}>Find your people.</Text><Text style={s.subtitle}>Good music brings us together.</Text></View>
+    {!selected ? <View accessibilityRole="tablist" style={s.tabs}>{(Object.keys(tabLabels) as Tab[]).map(key =>
+      <Pressable key={key} accessibilityRole="tab" accessibilityState={{ selected: tab === key, disabled }} disabled={disabled} onPress={() => changeTab(key)} style={[s.tab, tab === key && s.activeTab, busy && s.dim]}>
+        <Text style={[s.tabText, tab === key && s.activeTabText]}>{tabLabels[key]}</Text>
+      </Pressable>
+    )}</View> : null}
+    {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
+    {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
+    {disabled ? <ActivityIndicator color="#aeb5ff" accessibilityLabel="Loading people" /> : null}
     {selected ? <>
-      <ProfileAvatar name={selected.name} info={selected.publicInfo} /><Text style={styles.title}>{selected.name}</Text>{selected.username ? <Text style={styles.text}>@{selected.username}</Text> : null}
-      <Text style={styles.label}>Genres musicaux</Text>
-      <Text style={styles.text}>{selected.musicPreferences.join(', ') || 'Aucun genre renseigné.'}</Text>
-      {visibleProfileSections(selected).map(section => <Info key={section.title} {...section} />)}
-      {!Object.hasOwn(selected, 'friendsOnlyInfo') ? <Text style={styles.text}>Les informations réservées aux amis ne sont pas accessibles.</Text> : null}
-      <Action title="Retour à la liste" secondary disabled={disabled} onPress={() => setSelected(null)} />
+      <View style={s.card}><View style={s.identity}><ProfileAvatar name={selected.name} info={selected.publicInfo} /><View style={s.grow}><Text style={s.sectionTitle}>{selected.name}</Text>{selected.username ? <Text style={s.muted}>@{selected.username}</Text> : null}</View></View>
+        <Text style={s.label}>MUSIC DNA</Text>{genres(selected)}
+      </View>
+      {visibleProfileSections(selected).map(section => {
+        const entries = Object.entries(section.info ?? {}).filter(([key, value]) => !['avatar', 'username', 'shareListeningActivity'].includes(key) && typeof value === 'string' && value !== '');
+        const fieldLabels: Record<string, string> = { bio: 'Bio', city: 'City', favoriteArtists: 'Favorite artists' };
+        return <View key={section.title} style={s.card}><Text style={s.sectionTitle}>{section.title}</Text>
+          {entries.length ? entries.map(([key, value]) => <View key={key} style={s.field}><Text style={s.muted}>{fieldLabels[key] ?? key}</Text><Text style={s.body}>{String(value)}</Text></View>) : <Text style={s.muted}>No information shared yet.</Text>}
+        </View>;
+      })}
+      {!Object.hasOwn(selected, 'friendsOnlyInfo') ? <View style={s.info}><Text style={s.infoText}>Friends-only details are shared after a friend request is accepted.</Text></View> : null}
     </> : <>
-      {tab === 'search' ? <>
-        <Input label="Rechercher par nom" value={q} onChange={setQ} maxLength={100} disabled={disabled} />
-        <Input label="Genre musical (facultatif)" value={genre} onChange={setGenre} maxLength={50} disabled={disabled} />
-        <Action title="Rechercher des personnes" disabled={disabled} onPress={() => {
-          setFilters({ q: q.trim(), genre: genre.trim().toLowerCase() }); setPage(1); setReload(value => value + 1); setNotice('');
-        }} />
-      </> : null}
-      {!loading && rows.filter(row => tab === 'requests' || row.id !== userId).length === 0 && !error ?
-        <Text style={styles.text}>{tab === 'requests' ? 'Aucune demande en attente sur cette page.' : 'Aucune personne sur cette page.'}</Text> : null}
+      {tab === 'search' ? <View style={s.card}>
+        <Text style={s.sectionTitle}>A shared taste in music.</Text>
+        <Text style={s.muted}>Search by name or username, and discover people who enjoy the same genres.</Text>
+        <View style={s.field}><Text style={s.inputLabel}>Name or username</Text><View style={s.inputRow}><FontAwesomeIcon icon={faMagnifyingGlass} size={16} color="#8589a1" /><TextInput accessibilityLabel="Name or username" value={q} onChangeText={setQ} maxLength={100} editable={!disabled} autoCapitalize="none" placeholder="Search people" placeholderTextColor="#73778e" style={s.input} /></View></View>
+        <View style={s.field}><Text style={s.inputLabel}>Music genre · optional</Text><View style={s.inputRow}><FontAwesomeIcon icon={faMusic} size={16} color="#8589a1" /><TextInput accessibilityLabel="Music genre" value={genre} onChangeText={setGenre} maxLength={50} editable={!disabled} autoCapitalize="none" placeholder="e.g. jazz" placeholderTextColor="#73778e" style={s.input} /></View></View>
+        {button('Find people', () => { setFilters({ q: q.trim(), genre: genre.trim().toLowerCase() }); setPage(1); setReload(v => v + 1); setNotice(''); })}
+      </View> : <View style={s.info}><FontAwesomeIcon icon={tab === 'friends' ? faUserGroup : faUserPlus} size={19} color="#aeb5ff" /><Text style={[s.infoText, s.grow]}>{tab === 'friends' ? 'Your circle. Your shared love of music.' : 'Accept an invitation or manage the requests you have sent.'}</Text></View>}
+      <View style={s.sectionHeader}><Text style={s.sectionTitle}>{tab === 'friends' ? 'Your friends' : tab === 'requests' ? 'Pending requests' : 'People to discover'}</Text>{!loading && !error ? <Text style={s.muted}>{count} on this page</Text> : null}</View>
+      {!loading && count === 0 && !error ? <View style={s.empty}><FontAwesomeIcon icon={faUserGroup} size={28} color="#aeb5ff" /><Text style={s.sectionTitle}>{tab === 'requests' ? 'All caught up.' : tab === 'friends' ? 'Build your circle.' : 'No matches yet.'}</Text><Text style={[s.muted, s.center]}>{tab === 'requests' ? 'No pending requests on this page.' : tab === 'friends' ? 'Find people and send your first friend request.' : 'Try another name or music genre.'}</Text>{tab === 'friends' ? button('Discover people', () => changeTab('search')) : null}</View> : null}
       {rows.map(row => {
         if (tab === 'requests') {
           const request = row as FriendRequest;
           const incoming = request.receiverId === userId;
           const person = incoming ? request.sender : request.receiver;
-          return <View key={request.id} style={styles.card}>
-            <Text style={styles.label}>{incoming ? 'Demande reçue' : 'Demande envoyée'}</Text>
-            <ProfileAvatar name={person.name} info={person.publicInfo} size={44} /><Text style={styles.title}>{person.name}</Text>
-            <Action title={`Voir le profil de ${person.name}`} secondary disabled={disabled} onPress={() => openProfile(person)} />
-            {incoming ? <>
-              <Action title="Accepter" disabled={disabled} onPress={() => void action(async () => { await api.accept(request.id); refresh('Friend request accepted.'); })} />
-              <Action title="Refuser" secondary disabled={disabled} onPress={() => void action(async () => { await api.reject(request.id); refresh('Friend request declined.'); })} />
-            </> : <Action title="Annuler la demande" secondary disabled={disabled} onPress={() => void action(async () => { await api.cancel(request.id); refresh('Friend request cancelled.'); })} />}
+          return <View key={request.id} style={s.card}>
+            <Text style={s.label}>{incoming ? 'RECEIVED REQUEST' : 'SENT REQUEST'}</Text>{identity(person)}
+            {incoming ? <View style={s.actions}>
+              {button('Accept', () => void action(async () => { await api.accept(request.id); refresh('Friend request accepted.'); }))}
+              {button('Decline', () => void action(async () => { await api.reject(request.id); refresh('Friend request declined.'); }), true)}
+            </View> : button('Cancel request', () => void action(async () => { await api.cancel(request.id); refresh('Friend request cancelled.'); }), true)}
           </View>;
         }
         const person = row as PublicProfile;
         if (person.id === userId) return null;
-        return <View key={person.id} style={styles.card}>
-          <ProfileAvatar name={person.name} info={person.publicInfo} size={44} /><Text style={styles.title}>{person.name}</Text>
-          <Text style={styles.text}>{person.musicPreferences.join(', ') || 'Aucun genre renseigné.'}</Text>
-          <Action title={`Voir le profil de ${person.name}`} secondary disabled={disabled} onPress={() => openProfile(person)} />
-          <Action title={tab === 'friends' ? 'Retirer de mes amis' : 'Demander en ami'} secondary disabled={disabled}
-            onPress={() => tab === 'friends' ? remove(person) : send(person)} />
+        return <View key={person.id} style={s.card}>{identity(person)}{genres(person)}
+          {button(tab === 'friends' ? 'Remove friend' : 'Add friend', () => tab === 'friends' ? remove(person) : send(person), tab === 'friends')}
         </View>;
       })}
-      <Text style={styles.text}>Page {page}</Text>
-      <View style={styles.row}>
-        <Action title="Précédente" secondary disabled={disabled || page === 1} onPress={() => { setPage(p => p - 1); setNotice(''); }} />
-        <Action title="Suivante" secondary disabled={disabled || rows.length < PAGE_SIZE || page >= 1000000} onPress={() => { setPage(p => p + 1); setNotice(''); }} />
-      </View>
-      <Action title="Actualiser la liste" secondary disabled={disabled} onPress={() => { setReload(value => value + 1); setNotice(''); }} />
+      {page > 1 || rows.length >= PAGE_SIZE ? <View style={s.pagination}>
+        {button('Previous', () => { setPage(p => p - 1); setNotice(''); }, true, page === 1)}
+        <Text style={s.muted}>Page {page}</Text>
+        {button('Next', () => { setPage(p => p + 1); setNotice(''); }, true, rows.length < PAGE_SIZE || page >= 1000000)}
+      </View> : null}
+      {button('Refresh list', () => { setReload(v => v + 1); setNotice(''); }, true)}
     </>}
   </View>;
 }
+
+const s = StyleSheet.create({
+  screen: { gap: 22, paddingTop: 4, paddingBottom: 12 }, grow: { flex: 1 },
+  back: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 9, minHeight: 44 },
+  backText: { color: '#aeb5ff', fontSize: 13, fontWeight: '600' },
+  eyebrow: { color: '#b28dff', fontSize: 11, fontWeight: '600', marginBottom: 9 },
+  heading: { color: '#f5f5fa', fontSize: 30, lineHeight: 36, fontWeight: '700', letterSpacing: -0.6 },
+  subtitle: { color: '#999bae', fontSize: 14, lineHeight: 21, marginTop: 8 },
+  tabs: { flexDirection: 'row', padding: 5, gap: 4, borderRadius: 15, backgroundColor: '#13141c' },
+  tab: { flex: 1, minHeight: 44, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 4, borderRadius: 11 },
+  activeTab: { backgroundColor: '#252c56' }, tabText: { color: '#999bae', fontSize: 13, fontWeight: '600' }, activeTabText: { color: '#c4caff' },
+  card: { backgroundColor: '#13141c', borderRadius: 22, padding: 19, gap: 17 },
+  identity: { flexDirection: 'row', alignItems: 'center', gap: 13, minHeight: 48 },
+  name: { color: '#f5f5fa', fontSize: 17, lineHeight: 23, fontWeight: '600' },
+  sectionTitle: { color: '#f5f5fa', fontSize: 19, lineHeight: 25, fontWeight: '700' },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 },
+  muted: { color: '#999bae', fontSize: 13, lineHeight: 20 }, body: { color: '#e1e2ee', fontSize: 14, lineHeight: 21 },
+  label: { color: '#aeb5ff', fontSize: 10, fontWeight: '600', letterSpacing: 0.8 },
+  field: { gap: 7 }, inputLabel: { color: '#b8bacc', fontSize: 12, fontWeight: '600' },
+  inputRow: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#0e0f16', borderWidth: 1, borderColor: '#2b2d40', borderRadius: 13, paddingHorizontal: 13 },
+  input: { flex: 1, minHeight: 48, paddingVertical: 12, color: '#f5f5fa', fontSize: 14 },
+  button: { flexGrow: 1, minHeight: 46, paddingVertical: 13, paddingHorizontal: 15, borderRadius: 13, backgroundColor: '#535fff', justifyContent: 'center', alignItems: 'center' },
+  secondary: { backgroundColor: '#1e1f2b', borderWidth: 1, borderColor: '#2b2d40' },
+  buttonText: { color: '#f5f5fa', fontSize: 13, fontWeight: '600' }, dim: { opacity: 0.45 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, chip: { backgroundColor: '#252344', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 5 }, chipText: { color: '#c2b0ff', fontSize: 11 },
+  info: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 16, backgroundColor: '#1d254b' }, infoText: { color: '#aeb5ff', fontSize: 13, lineHeight: 20 },
+  empty: { alignItems: 'center', gap: 14, padding: 26, backgroundColor: '#13141c', borderRadius: 22 }, center: { textAlign: 'center' },
+  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, pagination: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  error: { color: '#ffb5ba', backgroundColor: '#35202a', padding: 14, borderRadius: 13, lineHeight: 21 },
+  notice: { color: '#cadbff', backgroundColor: '#1d254b', padding: 14, borderRadius: 13, lineHeight: 21 },
+});

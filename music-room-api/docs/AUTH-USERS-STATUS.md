@@ -131,7 +131,7 @@ l’autre développeur. Ce document ne confirme pas leur état sur les branches 
   cancellation and explicit linking, restoration after closing the app, remaining
   signed out after logout, verification/reset links with the app closed.
 - Profile screen follows `MobileDesign/Profile.png`: editable public name, display
-  handle and bio; friends-only city and listening preference; private birthday;
+  handle and bio; friends-only city; private birthday;
   public genres and favorite artists; linked accounts; backend address; logout.
 - Each editor PATCHes only its relevant section and preserves unrelated JSON keys.
   The handle is a display label, not a unique username or login identifier.
@@ -142,8 +142,8 @@ l’autre développeur. Ce document ne confirme pas leur état sur les branches 
   social provider or a password with a verified email. A row lock prevents concurrent
   removals from leaving the user without a sign-in method. Own profiles expose
   `hasPassword`, never the password hash.
-- Listening activity is a stored preference only; live room sharing remains future
-  work. Bottom navigation opens paginated, read-only account lists for rooms,
+- The unused listening-activity switch has been removed. Bottom navigation opens
+  paginated, read-only account lists for rooms,
   playlists and devices. Full music editing/playback screens remain separate work.
 - Validation: 344 backend unit tests, 29 auth/users integration tests in a disposable
   database schema, 54 mobile tests, both TypeScript checks, backend lint and iOS
@@ -194,3 +194,15 @@ l’autre développeur. Ce document ne confirme pas leur état sur les branches 
 - Validation: 351 unit tests, 34 auth/migration integration tests, 56 mobile tests;
   TypeScript and backend lint pass. Manual receipt/opening of the setup email and
   duplicate username feedback in the app remain acceptance checks.
+
+
+## PR #6 profile review follow-up
+
+- User search and other-user profiles now require an authenticated session.
+- Registration and profile updates trim display names and reject whitespace-only names.
+- Profile sections accept at most 20 short text fields (key: 50 characters; value: 500).
+  A guard validates these before DTO transformation to reject deeply nested JSON with 400.
+- Photos still use the dedicated avatar routes; echoed avatars from older clients are ignored.
+- The unused listening-activity preference is no longer displayed or submitted by the mobile app.
+- Validation: 351 backend unit tests, 39 auth/users integration tests in an isolated
+  schema, 60 mobile tests, both TypeScript checks and backend lint passed.

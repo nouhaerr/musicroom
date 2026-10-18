@@ -7,12 +7,13 @@ no example identity from the design is persisted.
 
 - Public: display name, unique username (not used to sign in), bio,
   photo, musical genres and favorite artists.
-- Friends only: city and listening activity preference.
+- Friends only: city.
 - Private: email, verification status and birthday. Email is read-only.
-- The listening preference is stored only. Live presence/current-room sharing is
-  not implemented. It needs server-side friendship and room visibility checks,
-  removal on revocation, and a mobile realtime subscription.
-- Each editor preserves unrelated JSON keys. Avatar changes use a separate route
+- Search and other-user profiles require login. Public information is visible to
+  authenticated users; friendship is required for the friends-only section.
+- Profile sections accept up to 20 plain text fields, keys up to 50 characters,
+  values up to 500 characters. Nested objects, arrays and booleans are rejected.
+- Each editor preserves unrelated short text fields. Avatar changes use a separate route
   so stale profile saves cannot restore a removed photo or bypass image validation.
 
 ## Profile photo
@@ -81,3 +82,21 @@ Manual checks:
   with email/password. Google/Facebook login must still reach the same account.
 - Reuse the email link: it must fail. After login, Create password becomes Change
   password. Existing sessions are revoked after completing the link.
+
+## Devices
+
+The Devices tab pins the current installation (`currentDeviceId`) at the top.
+Opening another device shows a separate details dialog without changing that card.
+The dialog includes model, platform, app version and registration date when available.
+Other devices can be detached after confirmation through `DELETE /devices/:id`.
+This deletes the device registration, not its authentication sessions; it can be
+registered again on a subsequent app start. For this device, use Profile → Log out.
+No remote playback selection, online status or control delegation is implied.
+
+## Manage friends
+
+Manage friends opens the Friends tab in the same dark/purple visual style as
+Profile and Devices. Requests contains received and sent invitations; Discover
+searches by name/username and optional genre. Tap a person's avatar/name card to
+open their current profile with server-enforced visibility. Back to profile
+returns to account settings. Labels and confirmations are in English.

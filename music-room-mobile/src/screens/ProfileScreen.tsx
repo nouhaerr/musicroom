@@ -1,7 +1,8 @@
+import { editableInfo } from '../api/profiles';
 import { ProfileAvatar } from '../components/ProfileAvatar';
 import { chooseProfilePhoto } from '../auth/profile-photo';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import Constants from 'expo-constants';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faGoogle, faFacebookF } from '@fortawesome/free-brands-svg-icons';
@@ -22,7 +23,6 @@ export function ProfileScreen({ client, onBusy, onLogout, onServer, onPeople }: 
   const [profile, setProfile] = useState<OwnProfile | null>(null);
   const [editing, setEditing] = useState<Section | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
-  const [share, setShare] = useState(false);
   const [server, setServer] = useState(client.baseUrl);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -47,7 +47,6 @@ export function ProfileScreen({ client, onBusy, onLogout, onServer, onPeople }: 
     setFields({ name: profile.name, username: (profile.username ?? ''), bio: value(profile.publicInfo, 'bio'),
       city: value(profile.friendsOnlyInfo, 'city'), birthday: value(profile.privateInfo, 'birthday'),
       genres: profile.musicPreferences.join(', '), artists: value(profile.publicInfo, 'favoriteArtists') });
-    setShare(profile.friendsOnlyInfo?.shareListeningActivity === true);
   }
   async function save() {
     if (!profile || !editing) return;
@@ -56,16 +55,16 @@ export function ProfileScreen({ client, onBusy, onLogout, onServer, onPeople }: 
       if (!fields.name.trim()) throw new Error('Enter your display name.');
       const username = fields.username.trim().replace(/^@/, '').toLowerCase();
       if (username && !/^[a-z0-9_]{3,30}$/.test(username)) throw new Error('Username must contain 3–30 letters, numbers or underscores.');
-      changes = { name: fields.name.trim(), username: username || null, publicInfo: { ...profile.publicInfo, bio: fields.bio.trim() } };
-    } else if (editing === 'friends') changes = { friendsOnlyInfo: { ...profile.friendsOnlyInfo, city: fields.city.trim(), shareListeningActivity: share } };
+      changes = { name: fields.name.trim(), username: username || null, publicInfo: { ...editableInfo(profile.publicInfo), bio: fields.bio.trim() } };
+    } else if (editing === 'friends') changes = { friendsOnlyInfo: { ...editableInfo(profile.friendsOnlyInfo), city: fields.city.trim() } };
     else if (editing === 'private') {
       const birthday = fields.birthday.trim();
       if (birthday && (!/^\d{4}-\d{2}-\d{2}$/.test(birthday) || !Number.isFinite(Date.parse(birthday)) || new Date(birthday).toISOString().slice(0, 10) !== birthday || birthday > new Date().toISOString().slice(0, 10))) throw new Error('Enter a valid birthday in YYYY-MM-DD format.');
-      changes = { privateInfo: { ...profile.privateInfo, birthday } };
+      changes = { privateInfo: { ...editableInfo(profile.privateInfo), birthday } };
     } else {
       const genres = [...new Set(fields.genres.split(',').map(g => g.trim().toLowerCase()).filter(Boolean))];
       if (genres.length > 50 || genres.some(g => g.length > 50)) throw new Error('Choose up to 50 genres, with no more than 50 characters each.');
-      changes = { musicPreferences: genres, publicInfo: { ...profile.publicInfo, favoriteArtists: fields.artists.trim() } };
+      changes = { musicPreferences: genres, publicInfo: { ...editableInfo(profile.publicInfo), favoriteArtists: fields.artists.trim() } };
     }
     const updated = await client.patchMyProfile(changes);
     if (alive.current) { setProfile(updated); setEditing(null); setNotice('Profile saved.'); }
@@ -103,7 +102,7 @@ export function ProfileScreen({ client, onBusy, onLogout, onServer, onPeople }: 
     ]);
   }
   const button = (label: string, action: () => void, full = false) => <Pressable accessibilityRole="button" disabled={busy} onPress={action} style={[full && s.button, busy && { opacity: 0.5 }]}><Text style={full ? s.buttonText : s.link}>{label}</Text></Pressable>;
-  const input = (key: string, label: string, multiline = false) => <View style={s.field}><Text style={s.label}>{label}</Text><TextInput accessibilityLabel={label} value={fields[key]} onChangeText={v => setFields(f => ({ ...f, [key]: v }))} editable={!busy} multiline={multiline} autoCapitalize="none" style={s.input} maxLength={key === 'bio' ? 500 : 250} /></View>;
+  const input = (key: string, label: string, multiline = false) => <View style={s.field}><Text style={s.label}>{label}</Text><TextInput accessibilityLabel={label} value={fields[key]} onChangeText={v => setFields(f => ({ ...f, [key]: v }))} editable={!busy} multiline={multiline} autoCapitalize="none" style={s.input} maxLength={key === 'bio' ? 500 : key === 'name' ? 100 : key === 'username' ? 30 : 250} /></View>;
   const detail = (label: string, text: string) => <View style={s.field}><Text style={s.label}>{label}</Text><Text style={s.text}>{text || 'Not set'}</Text></View>;
   function card(title: string, section: Section, contents: ReactNode, editor: ReactNode, badge?: string) {
     return <View style={section === 'music' ? s.music : s.card}>
@@ -120,7 +119,7 @@ export function ProfileScreen({ client, onBusy, onLogout, onServer, onPeople }: 
     {!profile ? button('Reload profile', () => void run(async () => { const p = await client.getMyProfile(); if (alive.current) setProfile(p); }), true) : <>
       <View style={[s.row, s.identity]}><Pressable accessibilityRole="button" accessibilityLabel="Edit profile photo" disabled={busy} onPress={editPhoto}><ProfileAvatar name={profile.name} info={profile.publicInfo} /><Text style={s.photoEdit}>Edit photo</Text></Pressable><View style={s.grow}><Text style={s.name}>{profile.name}</Text>{(profile.username ?? '') ? <Text style={s.muted}>@{(profile.username ?? '')}</Text> : null}<Text style={s.tagline}>{value(profile.publicInfo, 'bio')}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Edit public profile" disabled={busy} onPress={() => edit('public')}><FontAwesomeIcon icon={faPen} color="#aeb5ff" size={18} /></Pressable></View>
       {card('Public information', 'public', <>{detail('Display name / username', profile.name + ((profile.username ?? '') ? ` · @${(profile.username ?? '')}` : ''))}{detail('Bio', value(profile.publicInfo, 'bio'))}</>, <>{input('name', 'Display name')}{input('username', 'Unique username (3–30 letters, numbers or _)')}{input('bio', 'Bio', true)}</>, 'Visible to everyone')}
-      {card('Friends-only information', 'friends', <>{detail('City', value(profile.friendsOnlyInfo, 'city'))}{detail('Listening activity', profile.friendsOnlyInfo?.shareListeningActivity === true ? 'Share current room with friends' : 'Not shared')}{button('Manage friends', onPeople)}</>, <>{input('city', 'City')}<View style={s.row}><Text style={[s.text, s.grow]}>Share listening activity with friends</Text><Switch accessibilityLabel="Share listening activity with friends" value={share} onValueChange={setShare} disabled={busy} trackColor={{ true: '#535fff' }} /></View><Text style={s.muted}>Saves your preference. Live activity sharing will use this setting when available.</Text></>, 'Only your friends')}
+      {card('Friends-only information', 'friends', <>{detail('City', value(profile.friendsOnlyInfo, 'city'))}{button('Manage friends', onPeople)}</>, <>{input('city', 'City')}</>, 'Only your friends')}
       {card('Private information', 'private', <>{detail(`Email · ${profile.emailVerifiedAt ? 'Verified' : 'Not verified'}`, profile.email)}{detail('Birthday', value(profile.privateInfo, 'birthday'))}{profile.hasPassword ? button('Change password', () => Alert.alert('Change password', `Send a reset link to ${profile.email}? Completing the reset signs out all sessions.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Send email', onPress: () => void run(async () => { await client.forgot(profile.email); if (alive.current) setNotice('If your account is eligible, a reset email will arrive shortly.'); }) }])) : button('Create password', () => Alert.alert('Create a password', `We will send a one-time link to ${profile.email}. Creating your password signs out all sessions. Your social accounts remain linked.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Send email', onPress: () => void run(async () => { const result = await client.requestPasswordSetup(); if (alive.current) setNotice(result.message); }) }]))}</>, <>{detail('Email', profile.email)}{input('birthday', 'Birthday (YYYY-MM-DD)')}</>, 'Only you')}
       {card('Your music DNA', 'music', <><View style={s.chips}>{profile.musicPreferences.map(g => <View style={s.badge} key={g}><Text style={s.badgeText}>{g}</Text></View>)}</View>{detail('Favorite artists', value(profile.publicInfo, 'favoriteArtists'))}</>, <>{input('genres', 'Genres (comma separated)')}{input('artists', 'Favorite artists (public)')}</>)}
       <View style={s.card}><Text style={s.title}>Linked accounts</Text>{(['google', 'facebook'] as const).map(provider => <View key={provider} style={[s.row, s.provider]}><View style={s.providerIcon}><FontAwesomeIcon icon={provider === 'google' ? faGoogle : faFacebookF} color="#f5f5fa" size={20} /></View><View style={s.grow}><Text style={s.text}>{provider === 'google' ? 'Google' : 'Facebook'}</Text><Text style={s.muted}>{profile[provider === 'google' ? 'googleId' : 'facebookId'] ? 'Connected' : 'Not connected'}</Text></View>{button(profile[provider === 'google' ? 'googleId' : 'facebookId'] ? 'Unlink' : 'Link', () => social(provider))}</View>)}<Text style={s.muted}>Link a social account anytime for easier sign-in.</Text></View>

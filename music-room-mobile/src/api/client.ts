@@ -92,6 +92,8 @@ export class ApiClient {
 
   get user() { return this.session?.user ?? null; }
 
+  get currentDeviceId(): string | null { return this.deviceId; }
+
   subscribe(listener: (user: User | null) => void) {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
