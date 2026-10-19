@@ -1,3 +1,4 @@
+import { useScreenToast } from '../components/Toast';
 import { editableInfo } from '../api/profiles';
 import { ProfileAvatar } from '../components/ProfileAvatar';
 import { chooseProfilePhoto } from '../auth/profile-photo';
@@ -7,7 +8,7 @@ import Constants from 'expo-constants';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faGoogle, faFacebookF } from '@fortawesome/free-brands-svg-icons';
 import { faPen, faGlobe, faUsers, faLock, faSliders, faRightFromBracket } from '@fortawesome/free-solid-svg-icons';
-import type { ApiClient } from '../api/client';
+import { ApiError, normalizeBaseUrl, type ApiClient } from '../api/client';
 import { type OwnProfile, type ProfileInfo } from '../api/profiles';
 import { acquireGoogleIdToken } from '../auth/native-google';
 import { acquireFacebookCredential } from '../auth/native-facebook';
@@ -24,10 +25,14 @@ export function ProfileScreen({ client, onBusy, onLogout, onServer, onPeople }: 
   const [editing, setEditing] = useState<Section | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [server, setServer] = useState(client.baseUrl);
+  const [serverError, setServerError] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [retryAction, setRetryAction] = useState<(() => Promise<void>) | null>(null);
   const [notice, setNotice] = useState('');
-  useAutoDismiss(notice, setNotice); useAutoDismiss(error, setError);
+  useAutoDismiss(notice, setNotice); useAutoDismiss(profile && !retryAction ? error : '', setError);
+  useScreenToast(error, notice, error && retryAction ? () => void run(retryAction) : !profile && error ? () => void run(async () => { const p = await client.getMyProfile(); if (alive.current) setProfile(p); }) : undefined);
   const alive = useRef(false), working = useRef(false);
   useEffect(() => {
     alive.current = true;
@@ -36,37 +41,44 @@ export function ProfileScreen({ client, onBusy, onLogout, onServer, onPeople }: 
   }, [client]);
   async function run(action: () => Promise<void>) {
     if (working.current) return;
-    working.current = true; setBusy(true); onBusy(true); setError(''); setNotice('');
+    working.current = true; setRetryAction(null); setBusy(true); onBusy(true); setError(''); setNotice('');
     try { await action(); }
-    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to update your profile.'); }
+    catch (e) { if (alive.current) { setError(e instanceof Error ? e.message : 'Unable to update your profile.'); if (e instanceof ApiError && e.status === 0) setRetryAction(() => action); } }
     finally { working.current = false; if (alive.current) { setBusy(false); onBusy(false); } }
   }
   function edit(section: Section) {
     if (!profile) return;
-    setEditing(section); setError('');
+    setEditing(section); setError(''); setFieldErrors({});
     setFields({ name: profile.name, username: (profile.username ?? ''), bio: value(profile.publicInfo, 'bio'),
       city: value(profile.friendsOnlyInfo, 'city'), birthday: value(profile.privateInfo, 'birthday'),
       genres: profile.musicPreferences.join(', '), artists: value(profile.publicInfo, 'favoriteArtists') });
   }
   async function save() {
     if (!profile || !editing) return;
+    const invalid = (field: string, message: string) => { setFieldErrors({ [field]: message }); };
+    setFieldErrors({});
     let changes: Record<string, unknown> = {};
     if (editing === 'public') {
-      if (!fields.name.trim()) throw new Error('Enter your display name.');
+      if (!fields.name.trim()) return invalid('name', 'Enter your display name.');
       const username = fields.username.trim().replace(/^@/, '').toLowerCase();
-      if (username && !/^[a-z0-9_]{3,30}$/.test(username)) throw new Error('Username must contain 3–30 letters, numbers or underscores.');
+      if (username && !/^[a-z0-9_]{3,30}$/.test(username)) return invalid('username', 'Username must contain 3–30 letters, numbers or underscores.');
       changes = { name: fields.name.trim(), username: username || null, publicInfo: { ...editableInfo(profile.publicInfo), bio: fields.bio.trim() } };
     } else if (editing === 'friends') changes = { friendsOnlyInfo: { ...editableInfo(profile.friendsOnlyInfo), city: fields.city.trim() } };
     else if (editing === 'private') {
       const birthday = fields.birthday.trim();
-      if (birthday && (!/^\d{4}-\d{2}-\d{2}$/.test(birthday) || !Number.isFinite(Date.parse(birthday)) || new Date(birthday).toISOString().slice(0, 10) !== birthday || birthday > new Date().toISOString().slice(0, 10))) throw new Error('Enter a valid birthday in YYYY-MM-DD format.');
+      if (birthday && (!/^\d{4}-\d{2}-\d{2}$/.test(birthday) || !Number.isFinite(Date.parse(birthday)) || new Date(birthday).toISOString().slice(0, 10) !== birthday || birthday > new Date().toISOString().slice(0, 10))) return invalid('birthday', 'Enter a valid birthday in YYYY-MM-DD format.');
       changes = { privateInfo: { ...editableInfo(profile.privateInfo), birthday } };
     } else {
       const genres = [...new Set(fields.genres.split(',').map(g => g.trim().toLowerCase()).filter(Boolean))];
-      if (genres.length > 50 || genres.some(g => g.length > 50)) throw new Error('Choose up to 50 genres, with no more than 50 characters each.');
+      if (genres.length > 50 || genres.some(g => g.length > 50)) return invalid('genres', 'Choose up to 50 genres, with no more than 50 characters each.');
       changes = { musicPreferences: genres, publicInfo: { ...editableInfo(profile.publicInfo), favoriteArtists: fields.artists.trim() } };
     }
-    const updated = await client.patchMyProfile(changes);
+    let updated: OwnProfile;
+    try { updated = await client.patchMyProfile(changes); }
+    catch (e) {
+      if (e instanceof ApiError && e.status === 409 && editing === 'public') return invalid('username', e.message);
+      throw e;
+    }
     if (alive.current) { setProfile(updated); setEditing(null); setNotice('Profile saved.'); }
   }
   function editPhoto() {
@@ -102,7 +114,7 @@ export function ProfileScreen({ client, onBusy, onLogout, onServer, onPeople }: 
     ]);
   }
   const button = (label: string, action: () => void, full = false) => <Pressable accessibilityRole="button" disabled={busy} onPress={action} style={[full && s.button, busy && { opacity: 0.5 }]}><Text style={full ? s.buttonText : s.link}>{label}</Text></Pressable>;
-  const input = (key: string, label: string, multiline = false) => <View style={s.field}><Text style={s.label}>{label}</Text><TextInput accessibilityLabel={label} value={fields[key]} onChangeText={v => setFields(f => ({ ...f, [key]: v }))} editable={!busy} multiline={multiline} autoCapitalize="none" style={s.input} maxLength={key === 'bio' ? 500 : key === 'name' ? 100 : key === 'username' ? 30 : 250} /></View>;
+  const input = (key: string, label: string, multiline = false) => <View style={s.field}><Text style={s.label}>{label}</Text><TextInput accessibilityLabel={label} value={fields[key]} onChangeText={v => { setFields(f => ({ ...f, [key]: v })); setFieldErrors(errors => ({ ...errors, [key]: '' })); }} editable={!busy} multiline={multiline} autoCapitalize="none" style={[s.input, fieldErrors[key] ? { borderColor: '#ffaaaa' } : null]} maxLength={key === 'bio' ? 500 : key === 'name' ? 100 : key === 'username' ? 30 : 250} />{fieldErrors[key] ? <Text accessibilityRole="alert" style={s.error}>{fieldErrors[key]}</Text> : null}</View>;
   const detail = (label: string, text: string) => <View style={s.field}><Text style={s.label}>{label}</Text><Text style={s.text}>{text || 'Not set'}</Text></View>;
   function card(title: string, section: Section, contents: ReactNode, editor: ReactNode, badge?: string) {
     return <View style={section === 'music' ? s.music : s.card}>
@@ -113,8 +125,6 @@ export function ProfileScreen({ client, onBusy, onLogout, onServer, onPeople }: 
   }
   return <View style={s.page}>
     <Text style={s.eyebrow}>PROFILE & SETTINGS</Text><Text style={s.heading}>Your corner.</Text>
-    {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
-    {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
     {busy ? <ActivityIndicator accessibilityLabel="Loading profile" color="#aeb5ff" /> : null}
     {!profile ? button('Reload profile', () => void run(async () => { const p = await client.getMyProfile(); if (alive.current) setProfile(p); }), true) : <>
       <View style={[s.row, s.identity]}><Pressable accessibilityRole="button" accessibilityLabel="Edit profile photo" disabled={busy} onPress={editPhoto}><ProfileAvatar name={profile.name} info={profile.publicInfo} /><Text style={s.photoEdit}>Edit photo</Text></Pressable><View style={s.grow}><Text style={s.name}>{profile.name}</Text>{(profile.username ?? '') ? <Text style={s.muted}>@{(profile.username ?? '')}</Text> : null}<Text style={s.tagline}>{value(profile.publicInfo, 'bio')}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Edit public profile" disabled={busy} onPress={() => edit('public')}><FontAwesomeIcon icon={faPen} color="#aeb5ff" size={18} /></Pressable></View>
@@ -123,7 +133,7 @@ export function ProfileScreen({ client, onBusy, onLogout, onServer, onPeople }: 
       {card('Private information', 'private', <>{detail(`Email · ${profile.emailVerifiedAt ? 'Verified' : 'Not verified'}`, profile.email)}{detail('Birthday', value(profile.privateInfo, 'birthday'))}{profile.hasPassword ? button('Change password', () => Alert.alert('Change password', `Send a reset link to ${profile.email}? Completing the reset signs out all sessions.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Send email', onPress: () => void run(async () => { await client.forgot(profile.email); if (alive.current) setNotice('If your account is eligible, a reset email will arrive shortly.'); }) }])) : button('Create password', () => Alert.alert('Create a password', `We will send a one-time link to ${profile.email}. Creating your password signs out all sessions. Your social accounts remain linked.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Send email', onPress: () => void run(async () => { const result = await client.requestPasswordSetup(); if (alive.current) setNotice(result.message); }) }]))}</>, <>{detail('Email', profile.email)}{input('birthday', 'Birthday (YYYY-MM-DD)')}</>, 'Only you')}
       {card('Your music DNA', 'music', <><View style={s.chips}>{profile.musicPreferences.map(g => <View style={s.badge} key={g}><Text style={s.badgeText}>{g}</Text></View>)}</View>{detail('Favorite artists', value(profile.publicInfo, 'favoriteArtists'))}</>, <>{input('genres', 'Genres (comma separated)')}{input('artists', 'Favorite artists (public)')}</>)}
       <View style={s.card}><Text style={s.title}>Linked accounts</Text>{(['google', 'facebook'] as const).map(provider => <View key={provider} style={[s.row, s.provider]}><View style={s.providerIcon}><FontAwesomeIcon icon={provider === 'google' ? faGoogle : faFacebookF} color="#f5f5fa" size={20} /></View><View style={s.grow}><Text style={s.text}>{provider === 'google' ? 'Google' : 'Facebook'}</Text><Text style={s.muted}>{profile[provider === 'google' ? 'googleId' : 'facebookId'] ? 'Connected' : 'Not connected'}</Text></View>{button(profile[provider === 'google' ? 'googleId' : 'facebookId'] ? 'Unlink' : 'Link', () => social(provider))}</View>)}<Text style={s.muted}>Link a social account anytime for easier sign-in.</Text></View>
-      <View style={s.card}><View style={s.row}><FontAwesomeIcon icon={faSliders} color="#bca0ff" /><Text style={[s.title, s.grow]}>Advanced</Text></View><Text style={s.text}>Backend address</Text><TextInput accessibilityLabel="Backend address" value={server} onChangeText={setServer} editable={!busy} autoCapitalize="none" autoCorrect={false} keyboardType="url" style={s.input} /><Text style={s.muted}>Change the server address for testing. This setting applies only to this app on your device. Changing servers signs you out.</Text>{button('Save backend address', () => void run(async () => { await onServer(server); if (alive.current) setNotice('Backend address saved.'); }), true)}</View>
+      <View style={s.card}><View style={s.row}><FontAwesomeIcon icon={faSliders} color="#bca0ff" /><Text style={[s.title, s.grow]}>Advanced</Text></View><Text style={s.text}>Backend address</Text><TextInput accessibilityLabel="Backend address" value={server} onChangeText={value => { setServer(value); setServerError(''); }} editable={!busy} autoCapitalize="none" autoCorrect={false} keyboardType="url" style={s.input} /><>{serverError ? <Text accessibilityRole="alert" style={s.error}>{serverError}</Text> : null}</><Text style={s.muted}>Change the server address for testing. This setting applies only to this app on your device. Changing servers signs you out.</Text>{button('Save backend address', () => void run(async () => { let address: string; try { address = normalizeBaseUrl(server); } catch (e) { setServerError(e instanceof Error ? e.message : 'Enter a valid server address.'); return; } await onServer(address); if (alive.current) setNotice('Backend address saved.'); }), true)}</View>
       <Pressable accessibilityRole="button" disabled={busy} style={[s.button, s.logout]} onPress={() => void run(onLogout)}><FontAwesomeIcon icon={faRightFromBracket} color="#f5f5fa" /><Text style={s.buttonText}>Log out</Text></Pressable>
       <Text style={s.version}>Sonora · Version {Constants.expoConfig?.version ?? '0.1.0'}</Text>
     </>}

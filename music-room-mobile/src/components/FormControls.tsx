@@ -1,3 +1,4 @@
+import { fieldValidation } from '../auth/field-validation';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
@@ -5,20 +6,23 @@ import { faEye, faEyeSlash } from '@fortawesome/free-regular-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import type { PasswordFeedback } from '../auth/password-validation';
 
-export function Field({ label, value, change, password = false, email = false, icon, feedback = [], onBlur, maxLength }: {
+export function Field({ label, value, change, password = false, email = false, icon, feedback = [], onBlur, maxLength, required = false, submitted = false }: {
   label: string; value: string; change: (value: string) => void; password?: boolean; email?: boolean; icon?: IconDefinition;
-  maxLength?: number; feedback?: PasswordFeedback[]; onBlur?: () => void;
+  required?: boolean; submitted?: boolean; maxLength?: number; feedback?: PasswordFeedback[]; onBlur?: () => void;
 }) {
   const [visible, setVisible] = useState(false);
+  const [touched, setTouched] = useState(false);
+  const invalid = fieldValidation(value, required, email, touched || submitted);
   const secure = password && !visible;
   return <View style={s.field}><Text style={s.label}>{label}</Text>
-    <View style={s.inputWrap}><TextInput accessibilityLabel={label} maxLength={maxLength} style={[s.input, feedback.length > 0 && (feedback.every(item => item.valid) ? s.inputValid : s.inputInvalid)]} value={value} onChangeText={change} onBlur={onBlur}
+    <View style={s.inputWrap}><TextInput accessibilityLabel={label} maxLength={maxLength} style={[s.input, invalid ? s.inputInvalid : null, feedback.length > 0 && (feedback.every(item => item.valid) ? s.inputValid : s.inputInvalid)]} value={value} onChangeText={change} onBlur={() => { setTouched(true); onBlur?.(); }}
       secureTextEntry={secure} autoCapitalize="none" autoCorrect={false}
       keyboardType={email ? 'email-address' : 'default'} />
       {password ? <Pressable accessibilityRole="button" accessibilityLabel={visible ? 'Hide password' : 'Show password'} onPress={() => setVisible(value => !value)} style={s.fieldIconButton}>
         <FontAwesomeIcon icon={visible ? faEye : faEyeSlash} color="#A4ADBF" size={18} />
       </Pressable> : icon ? <FontAwesomeIcon icon={icon} color="#A4ADBF" size={17} style={s.fieldIcon} /> : null}
     </View>
+    {invalid ? <Text accessibilityRole="alert" style={s.feedbackInvalid}>{invalid}</Text> : null}
     {feedback.length > 0 ? <View accessibilityLiveRegion="polite">
       {feedback.map(item => <Text key={item.message} style={[s.fieldFeedback, item.valid ? s.feedbackValid : s.feedbackInvalid]}>
         {item.valid ? '✓' : '•'} {item.message}

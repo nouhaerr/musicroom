@@ -42,8 +42,8 @@ export class UsersController {
   @UseGuards(JwtAuthGuard)
   @ApiUnauthorizedResponse({ description: 'A valid session is required.' })
   @Get('search')
-  search(@Query() query: SearchUsersDto) {
-    return this.usersService.search(query);
+  search(@Query() query: SearchUsersDto, @CurrentUser() user: PublicUser) {
+    return this.usersService.search(query, user.id);
   }
 
   @UseGuards(JwtAuthGuard)

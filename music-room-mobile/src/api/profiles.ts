@@ -1,6 +1,8 @@
 export type ProfileInfo = Record<string, unknown> | null;
 
 export interface PublicProfile {
+  relationship?: 'NONE' | 'OUTGOING' | 'INCOMING' | 'FRIENDS';
+  friendRequestId?: string | null;
   id: string;
   name: string;
   username?: string | null;

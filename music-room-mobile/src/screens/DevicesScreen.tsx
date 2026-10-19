@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faCheckCircle, faChevronRight, faDesktop, faMobileScreen, faPlus, faRotateRight, faShieldHalved } from '@fortawesome/free-solid-svg-icons';
-import type { ApiClient } from '../api/client';
+import { ApiError, type ApiClient } from '../api/client';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 
 import { detachDevice, devicePage, DEVICE_PAGE_SIZE as PAGE_SIZE, type Device } from '../api/devices';
@@ -19,19 +19,21 @@ export function DevicesScreen({ client, onBusy }: { client: ApiClient; onBusy: (
   const [page, setPage] = useState(1);
   const [busy, setBusy] = useState(true);
   const [deleting, setDeleting] = useState(false);
+  const [retryDevice, setRetryDevice] = useState<Device | null>(null);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [notice, setNotice] = useState('');
   const [retry, setRetry] = useState(0);
-  useAutoDismiss(error, setError);
+  useAutoDismiss(retryDevice ? '' : error, setError);
   useAutoDismiss(notice, setNotice);
-  useScreenToast(error, notice);
+  useScreenToast(error || loadError, notice, error && retryDevice ? () => void remove(retryDevice) : !error && loadError ? () => setRetry(n => n + 1) : undefined);
   useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; };
   }, []);
   useEffect(() => {
     let active = true;
-    setBusy(true); setError('');
+    setBusy(true); setLoadError('');
     void (async () => {
       const data = await devicePage(client, page);
       if (!active) return;
@@ -47,7 +49,7 @@ export function DevicesScreen({ client, onBusy }: { client: ApiClient; onBusy: (
         }
       }
       if (active) { setDevices(data); setCurrent(found ?? null); }
-    })().catch(e => { if (active) { setCurrent(null); setError(e instanceof Error ? e.message : 'Unable to load your devices.'); } })
+    })().catch(e => { if (active) { setLoadError(e instanceof Error ? e.message : 'Unable to load your devices.'); } })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, [client, page, retry]);
@@ -56,12 +58,12 @@ export function DevicesScreen({ client, onBusy }: { client: ApiClient; onBusy: (
   const others = devices.filter(d => d.id !== currentDeviceId);
   async function remove(device: Device) {
     if (removing.current || !alive.current) return;
-    removing.current = true; setDeleting(true); onBusy(true); setError(''); setNotice('');
+    removing.current = true; setRetryDevice(null); setDeleting(true); onBusy(true); setError(''); setNotice('');
     try {
       await detachDevice(client, device.id);
       if (alive.current) { setDetails(null); setNotice('Device detached.'); setRetry(n => n + 1); }
     } catch (e) {
-      if (alive.current) { setDetails(null); setError(e instanceof Error ? e.message : 'Unable to detach device.'); }
+      if (alive.current) { setDetails(null); setError(e instanceof Error ? e.message : 'Unable to detach device.'); if (e instanceof ApiError && e.status === 0) setRetryDevice(device); }
     } finally {
       removing.current = false;
       if (alive.current) setDeleting(false);
@@ -96,7 +98,7 @@ export function DevicesScreen({ client, onBusy }: { client: ApiClient; onBusy: (
           <View style={s.grow}><Text style={s.rowName}>{device.model || 'Unnamed device'}</Text>{device.id === currentDeviceId ? <Text style={s.currentBadge}>This device</Text> : null}<Text style={s.muted}>{platformName(device.platform)} · Registered device</Text></View>
           <FontAwesomeIcon icon={faChevronRight} color="#72768f" size={15} />
         </Pressable>)}
-        {!others.length ? <Text style={s.muted}>No other devices on this page.</Text> : null}
+        {!busy && !loadError && !others.length ? <Text style={s.muted}>No other devices on this page.</Text> : null}
         <Text style={s.muted}>Tap a device to view its details or detach it.</Text>
       </View>
     <Pressable accessibilityRole="button" disabled={busy || deleting} onPress={() => setRetry(n => n + 1)} style={({ pressed }) => [s.refresh, (busy || pressed) && s.pressed]}><FontAwesomeIcon icon={faRotateRight} color="#f5f5fa" size={17} /><Text style={s.buttonText}>Refresh devices</Text></Pressable>

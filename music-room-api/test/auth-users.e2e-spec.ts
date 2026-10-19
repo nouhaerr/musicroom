@@ -692,3 +692,28 @@ describe('Review regressions: device installation and literal search', () => {
     }
   });
 });
+
+describe('Discovery friendship actions', () => {
+  it('returns persistent outgoing/incoming/accepted states through cancellation and removal', async () => {
+    const name = `Friend-State-${randomUUID()}`;
+    const a = await account(`Sender-${randomUUID()}`);
+    const b = await account(name);
+    const state = async () => {
+      const result = await request('GET', `/users/search?q=${encodeURIComponent(name)}`, undefined, a.accessToken);
+      expect(result.status).toBe(200);
+      return result.body.find((u: { id: string }) => u.id === b.id);
+    };
+    expect((await state()).relationship).toBe('NONE');
+    const sent = await request('POST', '/friends/requests', { userId: b.id }, a.accessToken);
+    expect(await state()).toMatchObject({ relationship: 'OUTGOING', friendRequestId: sent.body.id });
+    const sender = await request('GET', `/users/search?q=${encodeURIComponent(a.user.name)}`, undefined, b.accessToken);
+    expect(sender.body.find((u: { id: string }) => u.id === a.id)).toMatchObject({ relationship: 'INCOMING', friendRequestId: sent.body.id });
+    expect((await request('DELETE', `/friends/requests/${sent.body.id}`, undefined, a.accessToken)).status).toBe(200);
+    expect(await state()).toMatchObject({ relationship: 'NONE', friendRequestId: null });
+    const again = await request('POST', '/friends/requests', { userId: b.id }, a.accessToken);
+    expect((await request('POST', `/friends/requests/${again.body.id}/accept`, {}, b.accessToken)).status).toBe(201);
+    expect(await state()).toMatchObject({ relationship: 'FRIENDS', friendRequestId: null });
+    expect((await request('DELETE', `/friends/${b.id}`, undefined, a.accessToken)).status).toBe(200);
+    expect((await state()).relationship).toBe('NONE');
+  });
+});

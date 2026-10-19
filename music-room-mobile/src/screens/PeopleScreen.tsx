@@ -3,9 +3,10 @@ import { ProfileAvatar } from '../components/ProfileAvatar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
-import { faArrowLeft, faChevronRight, faMagnifyingGlass, faMusic, faUserGroup, faUserPlus } from '@fortawesome/free-solid-svg-icons';
-import type { ApiClient } from '../api/client';
+import { faArrowLeft, faChevronRight, faMagnifyingGlass, faMusic, faUserGroup, faUserPlus, faUserCheck, faClock, faXmark, faCheck, faEllipsis } from '@fortawesome/free-solid-svg-icons';
+import { ApiError, type ApiClient } from '../api/client';
 import { PAGE_SIZE, visibleProfileSections, type FriendRequest, type PublicProfile } from '../api/profiles';
 import { socialApi } from '../api/social';
 
@@ -27,11 +28,13 @@ export function PeopleScreen({ client, userId, onBusy, onBack }: {
   const loadedList = useRef('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [retryAction, setRetryAction] = useState<(() => Promise<void>) | null>(null);
   const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [notice, setNotice] = useState('');
   useAutoDismiss(notice, setNotice);
-  useScreenToast(error, notice);
-  useAutoDismiss(error, setError);
+  useScreenToast(error || loadError, notice, error && retryAction ? () => void action(retryAction) : !error && loadError ? () => setReload(n => n + 1) : undefined);
+  useAutoDismiss(retryAction ? '' : error, setError);
   const alive = useRef(false);
   const working = useRef(false);
   const disabled = loading || busy;
@@ -46,20 +49,20 @@ export function PeopleScreen({ client, userId, onBusy, onBack }: {
     let active = true;
     const listKey = JSON.stringify([tab, filters.q, filters.genre, page]);
     if (loadedList.current !== listKey) { setRows([]); loadedList.current = listKey; }
-    setLoading(true); setSelected(null); setError('');
+    setLoading(true); setSelected(null); setLoadError('');
     const request = tab === 'search' ? api.search(filters.q, filters.genre, page)
       : tab === 'friends' ? api.friends(page) : api.pending(page);
     void request.then(result => { if (active) setRows(result); })
-      .catch(e => { if (active) setError(e instanceof Error ? e.message : 'Unable to load. Please try again.'); })
+      .catch(e => { if (active) setLoadError(e instanceof Error ? e.message : 'Unable to load. Please try again.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [api, tab, filters.q, filters.genre, page, reload]);
 
   async function action(operation: () => Promise<void>) {
     if (working.current || loading) return;
-    working.current = true; setBusy(true); setError(''); setNotice('');
+    working.current = true; setRetryAction(null); setBusy(true); setError(''); setNotice('');
     try { await operation(); }
-    catch (e) { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to complete this action.'); }
+    catch (e) { if (alive.current) { setError(e instanceof Error ? e.message : 'Unable to complete this action.'); if (e instanceof ApiError && e.status === 0) setRetryAction(() => operation); } }
     finally { working.current = false; if (alive.current) setBusy(false); }
   }
   function refresh(message: string) {
@@ -96,6 +99,36 @@ export function PeopleScreen({ client, userId, onBusy, onBack }: {
       style={({ pressed }) => [s.button, secondary && s.secondary, (disabled || blocked || pressed) && s.dim]}>
       <Text style={s.buttonText}>{title}</Text>
     </Pressable>;
+  const socialButton = (title: string, icon: IconDefinition, onPress: () => void, secondary = false, trailing?: IconDefinition, hint?: string) =>
+    <Pressable accessibilityRole="button" accessibilityLabel={title === 'Pending' ? 'Cancel friend request' : title === 'Friends' ? 'Friend options' : title}
+      accessibilityHint={hint} accessibilityState={{ disabled }} disabled={disabled} onPress={onPress}
+      style={({ pressed }) => [s.button, s.socialButton, secondary && s.secondary, (disabled || pressed) && s.dim]}>
+      <FontAwesomeIcon icon={icon} size={16} color="#e4e7ff" />
+      <Text style={s.buttonText}>{title}</Text>
+      {trailing ? <FontAwesomeIcon icon={trailing} size={15} color="#b6bbdc" /> : null}
+    </Pressable>;
+  const pendingButton = (requestId: string) => socialButton('Pending', faClock, () => void action(async () => {
+    await api.cancel(requestId); refresh('Friend request cancelled.');
+  }), true, faXmark, 'Cancels the request you sent.');
+  const incomingButtons = (requestId: string) => <View style={s.actions}>
+    {socialButton('Accept', faCheck, () => void action(async () => {
+      await api.accept(requestId); refresh('Friend request accepted.');
+    }))}
+    {socialButton('Decline', faXmark, () => void action(async () => {
+      await api.reject(requestId); refresh('Friend request declined.');
+    }), true)}
+  </View>;
+  const relationshipButton = (person: PublicProfile) => {
+    if (tab === 'friends' || person.relationship === 'FRIENDS') return socialButton('Friends', faUserCheck, () => {
+      Alert.alert(person.name, 'You are friends.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Remove friend', style: 'destructive', onPress: () => { if (alive.current) remove(person); } },
+      ]);
+    }, true, faEllipsis, 'Opens friendship options.');
+    if (person.relationship === 'OUTGOING' && person.friendRequestId) return pendingButton(person.friendRequestId);
+    if (person.relationship === 'INCOMING' && person.friendRequestId) return incomingButtons(person.friendRequestId);
+    return socialButton('Add friend', faUserPlus, () => send(person));
+  };
   const genres = (person: PublicProfile) => <View style={s.chips}>
     {person.musicPreferences.length ? person.musicPreferences.map(g => <View key={g} style={s.chip}><Text style={s.chipText}>{g}</Text></View>) : <Text style={s.muted}>No music preferences yet.</Text>}
   </View>;
@@ -134,10 +167,10 @@ export function PeopleScreen({ client, userId, onBusy, onBack }: {
         <Text style={s.muted}>Search by name or username, and discover people who enjoy the same genres.</Text>
         <View style={s.field}><Text style={s.inputLabel}>Name or username</Text><View style={s.inputRow}><FontAwesomeIcon icon={faMagnifyingGlass} size={16} color="#8589a1" /><TextInput accessibilityLabel="Name or username" value={q} onChangeText={setQ} maxLength={100} editable={!disabled} autoCapitalize="none" placeholder="Search people" placeholderTextColor="#73778e" style={s.input} /></View></View>
         <View style={s.field}><Text style={s.inputLabel}>Music genre · optional</Text><View style={s.inputRow}><FontAwesomeIcon icon={faMusic} size={16} color="#8589a1" /><TextInput accessibilityLabel="Music genre" value={genre} onChangeText={setGenre} maxLength={50} editable={!disabled} autoCapitalize="none" placeholder="e.g. jazz" placeholderTextColor="#73778e" style={s.input} /></View></View>
-        {button('Find people', () => { setFilters({ q: q.trim(), genre: genre.trim().toLowerCase() }); setPage(1); setReload(v => v + 1); setNotice(''); })}
+        {socialButton('Find people', faMagnifyingGlass, () => { setFilters({ q: q.trim(), genre: genre.trim().toLowerCase() }); setPage(1); setReload(v => v + 1); setNotice(''); })}
       </View> : <View style={s.info}><FontAwesomeIcon icon={tab === 'friends' ? faUserGroup : faUserPlus} size={19} color="#aeb5ff" /><Text style={[s.infoText, s.grow]}>{tab === 'friends' ? 'Your circle. Your shared love of music.' : 'Accept an invitation or manage the requests you have sent.'}</Text></View>}
       <View style={s.sectionHeader}><Text style={s.sectionTitle}>{tab === 'friends' ? 'Your friends' : tab === 'requests' ? 'Pending requests' : 'People to discover'}</Text>{!loading && !error ? <Text style={s.muted}>{count} on this page</Text> : null}</View>
-      {!loading && count === 0 && !error ? <View style={s.empty}><FontAwesomeIcon icon={faUserGroup} size={28} color="#aeb5ff" /><Text style={s.sectionTitle}>{tab === 'requests' ? 'All caught up.' : tab === 'friends' ? 'Build your circle.' : 'No matches yet.'}</Text><Text style={[s.muted, s.center]}>{tab === 'requests' ? 'No pending requests on this page.' : tab === 'friends' ? 'Find people and send your first friend request.' : 'Try another name or music genre.'}</Text>{tab === 'friends' ? button('Discover people', () => changeTab('search')) : null}</View> : null}
+      {!loading && count === 0 && !error && !loadError ? <View style={s.empty}><FontAwesomeIcon icon={faUserGroup} size={28} color="#aeb5ff" /><Text style={s.sectionTitle}>{tab === 'requests' ? 'All caught up.' : tab === 'friends' ? 'Build your circle.' : 'No matches yet.'}</Text><Text style={[s.muted, s.center]}>{tab === 'requests' ? 'No pending requests on this page.' : tab === 'friends' ? 'Find people and send your first friend request.' : 'Try another name or music genre.'}</Text>{tab === 'friends' ? button('Discover people', () => changeTab('search')) : null}</View> : null}
       {rows.map(row => {
         if (tab === 'requests') {
           const request = row as FriendRequest;
@@ -145,16 +178,13 @@ export function PeopleScreen({ client, userId, onBusy, onBack }: {
           const person = incoming ? request.sender : request.receiver;
           return <View key={request.id} style={s.card}>
             <Text style={s.label}>{incoming ? 'RECEIVED REQUEST' : 'SENT REQUEST'}</Text>{identity(person)}
-            {incoming ? <View style={s.actions}>
-              {button('Accept', () => void action(async () => { await api.accept(request.id); refresh('Friend request accepted.'); }))}
-              {button('Decline', () => void action(async () => { await api.reject(request.id); refresh('Friend request declined.'); }), true)}
-            </View> : button('Cancel request', () => void action(async () => { await api.cancel(request.id); refresh('Friend request cancelled.'); }), true)}
+            {incoming ? incomingButtons(request.id) : pendingButton(request.id)}
           </View>;
         }
         const person = row as PublicProfile;
         if (person.id === userId) return null;
         return <View key={person.id} style={s.card}>{identity(person)}{genres(person)}
-          {button(tab === 'friends' ? 'Remove friend' : 'Add friend', () => tab === 'friends' ? remove(person) : send(person), tab === 'friends')}
+          {relationshipButton(person)}
         </View>;
       })}
       {page > 1 || rows.length >= PAGE_SIZE ? <View style={s.pagination}>
@@ -193,6 +223,7 @@ const s = StyleSheet.create({
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, chip: { backgroundColor: '#252344', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 5 }, chipText: { color: '#c2b0ff', fontSize: 11 },
   info: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 16, backgroundColor: '#1d254b' }, infoText: { color: '#aeb5ff', fontSize: 13, lineHeight: 20 },
   empty: { alignItems: 'center', gap: 14, padding: 26, backgroundColor: '#13141c', borderRadius: 22 }, center: { textAlign: 'center' },
+  socialButton: { flexDirection: 'row', gap: 10 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, pagination: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   error: { color: '#ffb5ba', backgroundColor: '#35202a', padding: 14, borderRadius: 13, lineHeight: 21 },
   notice: { color: '#cadbff', backgroundColor: '#1d254b', padding: 14, borderRadius: 13, lineHeight: 21 },
