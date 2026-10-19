@@ -12,6 +12,7 @@ import { secureStorage } from '../storage';
 import { AccountListScreen } from './AccountListScreen';
 import { ProfileScreen } from './ProfileScreen';
 import { PeopleScreen } from './PeopleScreen';
+import { PlaylistsScreen } from './PlaylistsScreen';
 import { DiscoverScreen } from './DiscoverScreen';
 import { Live } from '../realtime/live';
 import { acquireGoogleIdToken } from '../auth/native-google';
@@ -428,6 +429,7 @@ function Sonora() {
               }} /> : area === 'people' ?
               <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} /> :
               area === 'rooms' ? (live ? <DiscoverScreen key={user.id} client={client!} live={live} /> : null) :
+              area === 'playlists' ? <PlaylistsScreen key={user.id} client={client!} /> :
               <AccountListScreen key={area} client={client!} area={area} />}
           </> : <>
             {screen === 'settings' ? <>
