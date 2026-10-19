@@ -10,6 +10,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, ResourceType, Visibility, VoteLicense, Party } from '../../generated/prisma';
 import { distanceMeters } from '../common/geo';
+import { literal } from '../common/literal';
 import { CreatePartyDto } from './dto/create-party.dto';
 import { ListPartiesDto } from './dto/list-parties.dto';
 import { NextTrackDto, SuggestSongDto, VoteDto } from './dto/party-actions.dto';
@@ -25,8 +26,6 @@ const QUEUE_ORDER: Prisma.PartySongOrderByWithRelationInput[] = [
 ];
 // What each queue entry comes with, in GET /queue and in the realtime snapshot
 const QUEUE_ENTRY = { song: true, _count: { select: { votes: true } } } satisfies Prisma.PartySongInclude;
-// In a database LIKE pattern, % and _ are wildcards: a search escapes them, and the escape character itself
-const literal = (text: string) => text.replace(/[\\%_]/g, (character) => `\\${character}`);
 const SNAPSHOT_QUEUE_SIZE = 100; // a realtime snapshot holds as many entries as GET /queue's largest page
 // What each party comes with in the lists: who hosts it (id and name, nothing else) and what is playing
 const PARTY_CARD = { owner: { select: { id: true, name: true } }, nowPlaying: true } satisfies Prisma.PartyInclude;

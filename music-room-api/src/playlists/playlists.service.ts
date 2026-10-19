@@ -1,5 +1,6 @@
 import { InvitationsService, activeInvitation } from '../invitations/invitations.service';
 import { PaginationDto, paginate } from '../common/pagination.dto';
+import { literal } from '../common/literal';
 import {
   ConflictException,
   ForbiddenException,
@@ -10,6 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SongsService } from '../songs/songs.service';
 import { EditLicense, Playlist, Prisma, ResourceType, Visibility } from '../../generated/prisma';
 import { CreatePlaylistDto } from './dto/create-playlist.dto';
+import { ListPlaylistsDto } from './dto/list-playlists.dto';
 import { AddSongToPlaylistDto, MoveSongDto } from './dto/playlist-actions.dto';
 import { RealtimeService } from '../realtime/realtime.service';
 
@@ -19,6 +21,8 @@ const SONG_ORDER: Prisma.PlaylistSongOrderByWithRelationInput[] = [{ position: '
 // What each song of a playlist comes with, in GET /songs and in the realtime snapshot
 const SONG_ENTRY = { song: true, addedBy: { select: { id: true, name: true } } } satisfies Prisma.PlaylistSongInclude;
 const SNAPSHOT_SONGS_SIZE = 100; // a realtime snapshot holds as many songs as GET /songs' largest page
+// Who owns a playlist, as its card and its page show it: id and name, nothing else
+const OWNER = { select: { id: true, name: true } } satisfies Prisma.UserDefaultArgs;
 
 @Injectable()
 export class PlaylistsService {
@@ -40,14 +44,33 @@ export class PlaylistsService {
     });
   }
 
-  findPublic(userId: string, query: PaginationDto) {
-    return this.prisma.playlist.findMany({
-      where: { OR: [
-        { visibility: Visibility.PUBLIC }, { ownerId: userId },
-        { invitations: { some: { invitedUserId: userId, ...activeInvitation } } },
-      ] },
+  async findPublic(userId: string, query: ListPlaylistsDto) {
+    const playlists = await this.prisma.playlist.findMany({
+      where: {
+        OR: [
+          { visibility: Visibility.PUBLIC }, { ownerId: userId },
+          { invitations: { some: { invitedUserId: userId, ...activeInvitation } } },
+        ],
+        // A search keeps the rule above: only among the playlists this user may see
+        name: query.q ? { contains: literal(query.q), mode: 'insensitive' as const } : undefined,
+        visibility: query.visibility,
+      },
+      include: { owner: OWNER },
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], ...paginate(query),
     });
+    // For each playlist of the page, in one query: how many songs it has and the picture of its first
+    // song (same order as SONG_ORDER). LATERAL runs its part once per playlist, so the database reads
+    // one song each through the (playlistId, position) index, not every song of every playlist.
+    const cards = await this.prisma.$queryRaw<{ id: string; songsCount: number; cover: string | null }[]>`
+      SELECT p.id, c."songsCount", f.cover
+      FROM unnest(${playlists.map((playlist) => playlist.id)}::text[]) AS p(id)
+      CROSS JOIN LATERAL (SELECT COUNT(*)::int AS "songsCount" FROM "PlaylistSong" WHERE "playlistId" = p.id) c
+      LEFT JOIN LATERAL (
+        SELECT s."thumbnailUrl" AS cover FROM "PlaylistSong" ps JOIN "Song" s ON s.id = ps."songId"
+        WHERE ps."playlistId" = p.id ORDER BY ps.position, ps.id LIMIT 1
+      ) f ON true`;
+    const card = new Map(cards.map(({ id, ...rest }) => [id, rest]));
+    return playlists.map((playlist) => ({ ...playlist, ...card.get(playlist.id)! }));
   }
 
   findMine(userId: string, query: PaginationDto) {
@@ -70,9 +93,16 @@ export class PlaylistsService {
   }
 
   async getDetail(id: string, userId: string) {
-    const playlist = await this.findByIdOrThrow(id);
+    const playlist = await this.prisma.playlist.findUnique({ where: { id }, include: { owner: OWNER } });
+    if (!playlist) throw new NotFoundException('Playlist not found');
     await this.assertCanView(playlist, userId);
-    return playlist;
+    // For this user only, so never in a realtime snapshot: whether the page shows the editing tools,
+    // and their own invitation, which the page offers to accept or decline while it is pending
+    const invitation = await this.prisma.invitation.findUnique({
+      where: { playlistId_invitedUserId: { playlistId: id, invitedUserId: userId } },
+      select: { id: true, status: true },
+    });
+    return { ...playlist, canEdit: await this.canEdit(playlist, userId), invitation };
   }
 
   // Everything a client shows for a playlist (the same data as GET /playlists/:id and GET /songs),
@@ -204,11 +234,16 @@ export class PlaylistsService {
 
   private async assertCanEdit(playlist: Playlist, userId: string): Promise<void> {
     await this.assertCanView(playlist, userId);
-
-    if (playlist.editLicense === EditLicense.EVERYONE) return;
-    if (playlist.ownerId === userId) return;
-    if (await this.isCollaborator(playlist.id, userId)) return;
+    if (await this.canEdit(playlist, userId)) return;
     throw new ForbiddenException('Only invited collaborators can edit this playlist');
+  }
+
+  // Whether a user who may see the playlist may also add, move and remove its songs: everyone, or only
+  // its owner and the users who accepted an invitation. GET /playlists/:id gives the app this same answer.
+  private async canEdit(playlist: Playlist, userId: string): Promise<boolean> {
+    if (playlist.editLicense === EditLicense.EVERYONE) return true;
+    if (playlist.ownerId === userId) return true;
+    return this.isCollaborator(playlist.id, userId);
   }
 
   private async isCollaborator(playlistId: string, userId: string): Promise<boolean> {

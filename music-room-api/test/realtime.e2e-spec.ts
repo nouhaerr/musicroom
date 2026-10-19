@@ -1405,9 +1405,10 @@ async function playlistWatcher(token: string, id: string) {
   return { socket, received, last: () => received[received.length - 1] };
 }
 
-// What the REST routes show for a playlist right now: a snapshot must hold exactly this
+// What the REST routes show for a playlist right now: a snapshot must hold exactly this, apart from
+// what GET /playlists/:id adds for the page (its owner, and canEdit and invitation for this user only)
 async function playlistRestView(id: string, token: string) {
-  const playlist = (await request('GET', `/playlists/${id}`, undefined, token)).body;
+  const { owner, canEdit, invitation, ...playlist } = (await request('GET', `/playlists/${id}`, undefined, token)).body;
   const songs = (await request('GET', `/playlists/${id}/songs?limit=100`, undefined, token)).body;
   return { playlist, songs };
 }
