@@ -25,10 +25,10 @@ export class GoogleProvider {
 
   async verify(idToken: string): Promise<SocialProfile> {
     if (!this.enabled) {
-      throw new ServiceUnavailableException('La connexion Google est désactivée');
+      throw new ServiceUnavailableException('Google sign-in is disabled');
     }
     if (typeof idToken !== 'string' || !idToken.trim()) {
-      throw new UnauthorizedException('ID token Google invalide');
+      throw new UnauthorizedException('Invalid Google ID token');
     }
     let data: TokenPayload | undefined;
     try {
@@ -38,18 +38,18 @@ export class GoogleProvider {
       // Les erreurs de la bibliothèque peuvent contenir le JWT ou ses claims :
       // ne jamais les exposer dans les logs ou dans la réponse HTTP.
       if (error instanceof gaxios.GaxiosError) {
-        throw new ServiceUnavailableException('Vérification Google temporairement indisponible');
+        throw new ServiceUnavailableException('Google verification is temporarily unavailable');
       }
-      throw new UnauthorizedException('ID token Google invalide ou expiré');
+      throw new UnauthorizedException('Invalid or expired Google ID token');
     }
     if (!data || data.aud !== this.clientId) {
-      throw new UnauthorizedException('ID token Google émis pour une autre application');
+      throw new UnauthorizedException('Google ID token was issued for another application');
     }
     if (data.email_verified !== true) {
-      throw new UnauthorizedException('Email Google non vérifié');
+      throw new UnauthorizedException('Google email is not verified');
     }
     if (typeof data.sub !== 'string' || !data.sub.trim() || typeof data.email !== 'string' || !data.email.trim()) {
-      throw new UnauthorizedException('Profil Google incomplet (email manquant)');
+      throw new UnauthorizedException('Incomplete Google profile (missing email)');
     }
 
     return { providerId: data.sub, email: data.email,

@@ -64,10 +64,15 @@ de générer le client Prisma et de fournir une `TEST_DATABASE_URL` accessible d
 l’hôte. Les tests d’intégration exigent un rôle pouvant créer des schémas et ne
 réinitialisent jamais le schéma `public`.
 
-Le workflow doit être poussé avant de pouvoir constater un résultat dans GitHub
-Actions. Une règle GitHub de protection de branche peut ensuite rendre le job
+Le workflow backend a réussi le 8 octobre 2026 pour `c74e20b` dans la PR #4 :
+[voir l’exécution](https://github.com/nouhaerr/musicroom/actions/runs/37807903307).
+Une règle GitHub de protection de branche peut ensuite rendre le job
 `Backend CI / backend` obligatoire avant fusion ; elle n’est pas configurée par
 le fichier YAML.
+
+Le nouveau workflow `mobile-ci.yml` contrôle séparément le projet Expo : TypeScript,
+tests du client et export des bundles iOS/Android. Il ne réalise pas de build APK/IPA
+ni de test sur appareil. Son premier résultat GitHub reste à constater après push.
 
 Configuration fondée sur les documentations officielles :
 [typescript-eslint](https://typescript-eslint.io/getting-started/),

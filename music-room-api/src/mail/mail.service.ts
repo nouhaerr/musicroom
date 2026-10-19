@@ -60,8 +60,13 @@ export class MailService {
       'Confirmez votre adresse email pour activer votre compte Sonora. Ce lien expire dans 24 heures.', link);
   }
 
-  async sendPasswordResetEmail(email: string, token: string): Promise<void> {
+  async sendPasswordResetEmail(email: string, token: string, setup = false): Promise<void> {
     const link = this.link('reset-password', token);
+    if (setup) {
+      await this.send(email, 'SONORA — Create your password',
+        'Choose a password to sign in with your email. This link expires in 30 minutes and can only be used once. Your Google/Facebook account stays linked. Ignore this email if you did not request it.', link);
+      return;
+    }
     await this.send(email, 'SONORA — Réinitialisation du mot de passe',
       'Vous avez demandé un nouveau mot de passe. Ce lien expire dans 30 minutes et ne peut être utilisé qu’une fois. Si vous n’êtes pas à l’origine de cette demande, ignorez cet email.', link);
   }
@@ -116,7 +121,7 @@ export class MailService {
     const safeCode = typeof code === 'string' && ['EAUTH', 'ECONNECTION', 'ETIMEDOUT', 'ESOCKET', 'EENVELOPE', 'EMESSAGE', 'EDNS', 'ETLS'].includes(code)
       ? code : 'SMTP_ERROR';
     this.logger.error(`Échec SMTP (${safeCode}) : vérifier la configuration ou réessayer plus tard`);
-    throw new ServiceUnavailableException('Envoi des emails temporairement indisponible');
+    throw new ServiceUnavailableException('Email delivery is temporarily unavailable');
   }
 }
 
