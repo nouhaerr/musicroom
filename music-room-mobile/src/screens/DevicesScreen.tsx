@@ -1,3 +1,4 @@
+import { useScreenToast } from '../components/Toast';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
@@ -23,13 +24,14 @@ export function DevicesScreen({ client, onBusy }: { client: ApiClient; onBusy: (
   const [retry, setRetry] = useState(0);
   useAutoDismiss(error, setError);
   useAutoDismiss(notice, setNotice);
+  useScreenToast(error, notice);
   useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; };
   }, []);
   useEffect(() => {
     let active = true;
-    setBusy(true); setError(''); setDevices([]);
+    setBusy(true); setError('');
     void (async () => {
       const data = await devicePage(client, page);
       if (!active) return;
@@ -77,9 +79,7 @@ export function DevicesScreen({ client, onBusy }: { client: ApiClient; onBusy: (
     <View style={s.header}><View style={s.grow}><Text style={s.eyebrow}>YOUR DEVICES</Text><Text style={s.heading}>Your sound, everywhere.</Text></View>
       <Pressable accessibilityRole="button" accessibilityLabel="Add a device" onPress={addDevice} style={s.iconButton}><FontAwesomeIcon icon={faPlus} size={23} color="#f5f5fa" /></Pressable>
     </View>
-    {busy ? <ActivityIndicator color="#aeb5ff" accessibilityLabel="Loading devices" /> : null}
-    {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
-    {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
+    <View style={{ height: 20 }}>{busy ? <ActivityIndicator color="#aeb5ff" accessibilityLabel="Loading devices" /> : null}</View>
     {selected ? <>
       <View style={s.selected}>
         <View style={s.row}><Text style={[s.label, s.grow]}>CURRENT DEVICE</Text><FontAwesomeIcon icon={faCheckCircle} size={22} color="#aeb5ff" /></View>

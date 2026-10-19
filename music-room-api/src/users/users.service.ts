@@ -80,9 +80,10 @@ export class UsersService {
   }
 
   search(query: SearchUsersDto) {
+    const escape = (text: string) => text.replace(/[\\%_]/g, character => `\\${character}`);
     return this.prisma.user.findMany({
       where: {
-        ...(query.q ? { OR: [{ name: { contains: query.q.trim(), mode: 'insensitive' as const } }, { username: { contains: query.q.trim().replace(/^@/, ''), mode: 'insensitive' as const } }] } : {}),
+        ...(query.q ? { OR: [{ name: { contains: escape(query.q.trim()), mode: 'insensitive' as const } }, { username: { contains: escape(query.q.trim().replace(/^@/, '')), mode: 'insensitive' as const } }] } : {}),
         ...(query.genre ? { musicPreferences: { has: query.genre } } : {}),
       },
       select: publicProfileSelect,

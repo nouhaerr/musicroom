@@ -661,3 +661,34 @@ describe('Profile review regressions', () => {
     }
   });
 });
+
+
+describe('Review regressions: device installation and literal search', () => {
+  it('upserts one installation per account, updates its model and isolates owners', async () => {
+    const a = await account();
+    const b = await account();
+    const installationId = randomUUID();
+    const payload = { platform: 'ANDROID', model: 'Samsung Galaxy A54', appVersion: '1', installationId };
+    const registrations = await Promise.all(Array.from({ length: 4 }, () => request('POST', '/devices', payload, a.accessToken)));
+    expect(registrations.map(r => r.status)).toEqual([201, 201, 201, 201]);
+    expect(new Set(registrations.map(r => r.body.id)).size).toBe(1);
+    const other = await request('POST', '/devices', payload, b.accessToken);
+    expect(other.body.id).not.toBe(registrations[0].body.id);
+    const returned = await request('POST', '/devices', { ...payload, appVersion: '2' }, a.accessToken);
+    expect(returned.body.id).toBe(registrations[0].body.id);
+    expect(returned.body.appVersion).toBe('2');
+    expect(await db.device.count({ where: { userId: a.id, installationId } })).toBe(1);
+    expect((await request('POST', '/devices', { ...payload, installationId: 'invalid' }, a.accessToken)).status).toBe(400);
+  });
+  it('treats percent, underscore and backslash as literal characters', async () => {
+    const viewer = await account();
+    const marker = randomUUID();
+    for (const symbol of ['%', '_', String.fromCharCode(92)]) {
+      const matching = await account(`${marker}${symbol}literal`);
+      await account(`${marker}Xliteral`);
+      const result = await request('GET', `/users/search?q=${encodeURIComponent(marker + symbol)}`, undefined, viewer.accessToken);
+      expect(result.status).toBe(200);
+      expect(result.body.map((u: { id: string }) => u.id)).toEqual([matching.id]);
+    }
+  });
+});

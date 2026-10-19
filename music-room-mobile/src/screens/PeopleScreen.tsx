@@ -1,3 +1,4 @@
+import { useScreenToast } from '../components/Toast';
 import { ProfileAvatar } from '../components/ProfileAvatar';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -23,11 +24,13 @@ export function PeopleScreen({ client, userId, onBusy, onBack }: {
   const [reload, setReload] = useState(0);
   const [rows, setRows] = useState<(PublicProfile | FriendRequest)[]>([]);
   const [selected, setSelected] = useState<PublicProfile | null>(null);
+  const loadedList = useRef('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   useAutoDismiss(notice, setNotice);
+  useScreenToast(error, notice);
   useAutoDismiss(error, setError);
   const alive = useRef(false);
   const working = useRef(false);
@@ -41,7 +44,9 @@ export function PeopleScreen({ client, userId, onBusy, onBack }: {
 
   useEffect(() => {
     let active = true;
-    setLoading(true); setRows([]); setSelected(null); setError('');
+    const listKey = JSON.stringify([tab, filters.q, filters.genre, page]);
+    if (loadedList.current !== listKey) { setRows([]); loadedList.current = listKey; }
+    setLoading(true); setSelected(null); setError('');
     const request = tab === 'search' ? api.search(filters.q, filters.genre, page)
       : tab === 'friends' ? api.friends(page) : api.pending(page);
     void request.then(result => { if (active) setRows(result); })
@@ -110,9 +115,7 @@ export function PeopleScreen({ client, userId, onBusy, onBack }: {
         <Text style={[s.tabText, tab === key && s.activeTabText]}>{tabLabels[key]}</Text>
       </Pressable>
     )}</View> : null}
-    {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
-    {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
-    {disabled ? <ActivityIndicator color="#aeb5ff" accessibilityLabel="Loading people" /> : null}
+    <View style={{ height: 20 }}>{disabled ? <ActivityIndicator color="#aeb5ff" accessibilityLabel="Loading people" /> : null}</View>
     {selected ? <>
       <View style={s.card}><View style={s.identity}><ProfileAvatar name={selected.name} info={selected.publicInfo} /><View style={s.grow}><Text style={s.sectionTitle}>{selected.name}</Text>{selected.username ? <Text style={s.muted}>@{selected.username}</Text> : null}</View></View>
         <Text style={s.label}>MUSIC DNA</Text>{genres(selected)}

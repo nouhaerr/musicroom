@@ -180,3 +180,45 @@ test('successful password reset clears the local session and uses POST on the co
   assert.deepEqual(JSON.parse(String(f.calls.at(-1)?.init.body)), { token: 'aaa.bbb.ccc', newPassword: 'new-password' });
   assert.equal(f.client.user, null);
 });
+
+test('includes descriptive device metadata even before authentication without exposing a device identity', async () => {
+  const f = fixture(() => json({}));
+  const calls: RequestInit[] = [];
+  const client = new ApiClient(origin, f.storage, async (_url, init = {}) => {
+    calls.push(init);
+    return json({});
+  }, { platform: 'IOS', model: 'iPhone 18', appVersion: '1.0' });
+  await client.register('Alice', 'alice@example.test', 'password1');
+  await client.forgot('alice@example.test');
+  for (const call of calls) {
+    const headers = new Headers(call.headers);
+    assert.equal(headers.get('X-Device-Platform'), 'IOS');
+    assert.equal(decodeURIComponent(headers.get('X-Device-Model')!), 'iPhone 18');
+    assert.equal(headers.get('X-App-Version'), '1.0');
+    assert.equal(headers.get('X-Device-Id'), null);
+    assert.equal(headers.get('Authorization'), null);
+  }
+});
+
+test('keeps the installation identity when switching accounts or backend aliases', async () => {
+  const f = fixture(() => json({}));
+  const registrations: { installationId: string; model: string }[] = [];
+  let generated = 0;
+  const make = (baseUrl: string, id: string) => new ApiClient(baseUrl, f.storage, async (url, init = {}) => {
+    if (String(url).endsWith('/auth/login')) return json({ ...session(), user: { ...user, id } });
+    if (String(url).endsWith('/devices')) {
+      registrations.push(JSON.parse(String(init.body)));
+      return json({ id: `device-${id}` });
+    }
+    return json({});
+  }, { platform: 'ANDROID', model: 'Samsung Galaxy A54', appVersion: '1' }, () => { generated++; return '59a5463a-3343-43f5-974b-63cb42d14b40'; });
+  for (const [url, id] of [[origin, 'a'], [origin, 'b'], ['https://alias.example.test', 'a']]) {
+    const client = make(url, id);
+    await client.login('alice@example.test', 'password1');
+    await client.request('/users/me');
+  }
+  assert.equal(generated, 1);
+  assert.equal(registrations.length, 3);
+  assert.equal(new Set(registrations.map(r => r.installationId)).size, 1);
+  assert.ok(registrations.every(r => r.model === 'Samsung Galaxy A54'));
+});

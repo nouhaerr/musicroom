@@ -82,12 +82,14 @@ export class ApiClient {
   private storage: TokenStorage;
   private fetcher: typeof fetch;
   private deviceInfo?: DeviceInfo;
+  private readonly installationIdFactory?: () => string;
 
-  constructor(baseUrl: string, storage: TokenStorage, fetcher: typeof fetch = fetch, deviceInfo?: DeviceInfo) {
+  constructor(baseUrl: string, storage: TokenStorage, fetcher: typeof fetch = fetch, deviceInfo?: DeviceInfo, installationIdFactory?: () => string) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.storage = storage;
     this.fetcher = fetcher;
     this.deviceInfo = deviceInfo;
+    this.installationIdFactory = installationIdFactory;
   }
 
   get user() { return this.session?.user ?? null; }
@@ -128,7 +130,12 @@ export class ApiClient {
     try {
       const response = await this.fetcher(this.baseUrl + path, {
         method,
-        headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        headers: { Accept: 'application/json',
+          ...(this.deviceInfo ? {
+            'X-Device-Platform': this.deviceInfo.platform,
+            'X-Device-Model': encodeURIComponent(this.deviceInfo.model.slice(0, 200)),
+            'X-App-Version': encodeURIComponent((this.deviceInfo.appVersion ?? '0.1.0').slice(0, 50)),
+          } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
           ...(token ? { Authorization: `Bearer ${token}`, ...(deviceId ? { 'X-Device-Id': deviceId } : {}) } : {}) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal,
@@ -343,6 +350,20 @@ export class ApiClient {
     const assertActive = () => {
       if (generation !== this.generation || !userId || this.user?.id !== userId) throw new ApiError(401, 'Session closed.');
     };
+    if (this.installationIdFactory) {
+      const installationKey = 'sonora.installation.v1';
+      let installationId = await this.storage.getItem(installationKey);
+      if (!installationId) {
+        installationId = this.installationIdFactory();
+        await this.storage.setItem(installationKey, installationId);
+      }
+      assertActive();
+      const device = await this.authenticatedRequest<{ id: string }>('/devices', 'POST', { ...info, installationId });
+      assertActive();
+      if (typeof device?.id !== 'string' || !device.id) throw new Error('Invalid device registration response.');
+      this.deviceId = device.id;
+      return;
+    }
     const key = 'sonora.device.v1';
     const raw = await this.storage.getItem(key);
     let saved: { baseUrl?: string; userId?: string; id?: string } | null = null;

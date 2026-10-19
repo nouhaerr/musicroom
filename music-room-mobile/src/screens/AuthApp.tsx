@@ -7,6 +7,9 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Linking from 'expo-linking';
 import Constants from 'expo-constants';
+import * as Device from 'expo-device';
+import { randomUUID } from 'expo-crypto';
+import { ToastProvider } from '../components/Toast';
 import { ApiClient, ApiError, normalizeBaseUrl, tokenFromInput, type User } from '../api/client';
 import { secureStorage } from '../storage';
 import { AccountListScreen } from './AccountListScreen';
@@ -28,9 +31,9 @@ const SERVER_KEY = 'sonora.server.v1';
 function createClient(url: string) {
   return new ApiClient(url, secureStorage, fetch, {
     platform: Platform.OS === 'ios' ? 'IOS' : 'ANDROID',
-    model: `${Platform.OS} ${Platform.Version}`,
+    model: Device.modelName ?? `${Platform.OS} device`,
     appVersion: Constants.expoConfig?.version ?? '0.1.0',
-  });
+  }, randomUUID);
 }
 const defaultServer = process.env.EXPO_PUBLIC_API_URL || (Platform.OS === 'android' ? 'http://10.0.2.2:3000' : 'http://localhost:3000');
 function PasswordFields({ password, confirm, onPassword, onConfirm, submitted, reset = false }: {
@@ -436,7 +439,7 @@ function Sonora() {
   </SafeAreaView>;
 }
 
-export default function App() { return <SafeAreaProvider><Sonora /></SafeAreaProvider>; }
+export default function App() { return <SafeAreaProvider><ToastProvider><Sonora /></ToastProvider></SafeAreaProvider>; }
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#10141E' }, grow: { flex: 1 },
