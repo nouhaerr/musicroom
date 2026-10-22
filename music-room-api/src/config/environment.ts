@@ -16,5 +16,14 @@ export function validateEnvironment(config: Record<string, unknown>): Record<str
   if (config.JWT_ACCESS_SECRET === config.JWT_REFRESH_SECRET) {
     throw new Error('JWT_ACCESS_SECRET et JWT_REFRESH_SECRET doivent être différents');
   }
+  // How many songs a party queue or a playlist may hold: also how many one realtime snapshot carries, so that
+  // everyone always sees the whole list. Absent or empty means 100; above 1000, each message gets too heavy.
+  for (const name of ['MAX_PARTY_SONGS', 'MAX_PLAYLIST_SONGS']) {
+    const value = config[name] === undefined || config[name] === '' ? '100' : config[name];
+    if (typeof value !== 'string' || !/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 1000) {
+      throw new Error(`${name} must be a whole number from 1 to 1000`);
+    }
+    config[name] = Number(value);
+  }
   return config;
 }

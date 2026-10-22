@@ -63,8 +63,8 @@ export interface NewParty {
 // One realtime message: the whole party, as GET /parties/:id and GET /parties/:id/queue return it
 export interface PartySnapshot {
   party: Party;
-  queue: QueueEntry[]; // the first 100 entries
-  queueLength: number; // the real length of the queue
+  queue: QueueEntry[]; // the whole queue: the server keeps it at MAX_PARTY_SONGS songs at most (100 by default)
+  queueLength: number; // how many songs are in the queue
   playingForMs: number | null; // how long the song has been playing when the server sent this; null if none is
 }
 

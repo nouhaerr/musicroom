@@ -296,3 +296,36 @@ describe('Playlist editing: several people at the same moment', () => {
     });
   });
 });
+
+describe('A playlist holds at most 100 songs', () => {
+  const full = 'This playlist is full (100 songs). Remove a song to add another.';
+
+  it('accepts the 100th song and refuses the 101st, at the end or at a chosen position, until one is removed', async () => {
+    const { owner, id, entries } = await playlistWithSongs(99);
+
+    expect((await add(id, owner.token)).status).toBe(201);
+    for (const extra of [{}, { position: 0.5 }]) {
+      const refused = await add(id, owner.token, extra);
+      expect(refused.status).toBe(409);
+      expect(refused.body.message).toBe(full);
+    }
+    // Moving a song changes nothing to the count
+    expect((await move(id, entries[1].id, owner.token, 0.5, entries[1].position)).status).toBe(200);
+    expect((await add(id, owner.token)).status).toBe(409);
+
+    expect((await remove(id, entries[0].id, owner.token)).status).toBe(200);
+    expect((await add(id, owner.token)).status).toBe(201);
+    expect(await songs(id, owner.token)).toHaveLength(100);
+  });
+
+  it('lets only one of two simultaneous additions take the last place, wherever each one goes', async () => {
+    const { owner, id } = await playlistWithSongs(99);
+
+    // Each insertion is slowed down: without the lock, both additions would count 99 songs and both be added
+    await withSlowTrigger('PlaylistSong', 'BEFORE INSERT', 1, async () => {
+      const answers = await Promise.all([add(id, owner.token), add(id, owner.token, { position: 0.5 })]);
+      expect(statuses(answers)).toEqual([201, 409]);
+    });
+    expect(await songs(id, owner.token)).toHaveLength(100);
+  });
+});

@@ -7,6 +7,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma, ResourceType, Visibility, VoteLicense, Party } from '../../generated/prisma';
 import { distanceMeters } from '../common/geo';
@@ -26,18 +27,22 @@ const QUEUE_ORDER: Prisma.PartySongOrderByWithRelationInput[] = [
 ];
 // What each queue entry comes with, in GET /queue and in the realtime snapshot
 const QUEUE_ENTRY = { song: true, _count: { select: { votes: true } } } satisfies Prisma.PartySongInclude;
-const SNAPSHOT_QUEUE_SIZE = 100; // a realtime snapshot holds as many entries as GET /queue's largest page
 // What each party comes with in the lists: who hosts it (id and name, nothing else) and what is playing
 const PARTY_CARD = { owner: { select: { id: true, name: true } }, nowPlaying: true } satisfies Prisma.PartyInclude;
 
 @Injectable()
 export class PartiesService {
+  private readonly maxSongs: number; // how many songs a queue may hold, and so how many a snapshot carries (MAX_PARTY_SONGS)
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly invitations: InvitationsService,
     private readonly songsService: SongsService,
     private readonly realtime: RealtimeService,
-  ) {}
+    config: ConfigService,
+  ) {
+    this.maxSongs = config.getOrThrow<number>('MAX_PARTY_SONGS');
+  }
 
   // -----------------------------------------------------------------
   // Création / lecture
@@ -129,7 +134,7 @@ export class PartiesService {
       async (tx) => {
         const party = await tx.party.findUniqueOrThrow({ where: { id: partyId }, include: { nowPlaying: true } });
         const where = { partyPlaylistId: party.partyPlaylistId };
-        const queue = await tx.partySong.findMany({ where, include: QUEUE_ENTRY, orderBy: QUEUE_ORDER, take: SNAPSHOT_QUEUE_SIZE });
+        const queue = await tx.partySong.findMany({ where, include: QUEUE_ENTRY, orderBy: QUEUE_ORDER, take: this.maxSongs });
         const queueLength = await tx.partySong.count({ where });
         // How long the current song has been playing, measured with this server's clock alone:
         // a phone must not compare its own clock with nowPlayingStartedAt, the two may differ
@@ -165,9 +170,17 @@ export class PartiesService {
     const song = await this.songsService.findOrCreateByExternalId(dto.externalId);
 
     try {
-      const partySong = await this.prisma.partySong.create({
-        data: { partyPlaylistId: party.partyPlaylistId, songId: song.id },
-        include: { song: true },
+      const partySong = await this.prisma.$transaction(async (tx) => {
+        // A queue holds at most what one snapshot holds, so everyone always sees all of it. The party stays
+        // locked until the song is added: of two suggestions for the last place, the second finds the queue full.
+        await tx.$queryRaw`SELECT id FROM "Party" WHERE id = ${party.id} FOR UPDATE`;
+        if (await tx.partySong.count({ where: { partyPlaylistId: party.partyPlaylistId } }) >= this.maxSongs) {
+          throw new ConflictException(`The queue is full (${this.maxSongs} songs). Vote for a song already in it.`);
+        }
+        return tx.partySong.create({
+          data: { partyPlaylistId: party.partyPlaylistId, songId: song.id },
+          include: { song: true },
+        });
       });
       this.realtime.partyChanged(party.id);
       return partySong;

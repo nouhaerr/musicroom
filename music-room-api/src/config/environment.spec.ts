@@ -51,6 +51,35 @@ describe('JWT environment validation', () => {
   });
 });
 
+describe.each(['MAX_PARTY_SONGS', 'MAX_PLAYLIST_SONGS'])('How many songs a list may hold (%s)', name => {
+  const limit = (value: unknown) => validateEnvironment({ ...valid(), [name]: value })[name];
+
+  it('is 100 when absent or empty, otherwise the number written', () => {
+    expect(validateEnvironment(valid())[name]).toBe(100);
+    expect(limit('')).toBe(100);
+    for (const [value, expected] of [['250', 250], ['1', 1], ['1000', 1000], ['0100', 100]] as const) expect(limit(value)).toBe(expected);
+  });
+
+  it('stops the server for anything that is not a whole number from 1 to 1000', () => {
+    for (const value of ['0', '-5', 'abc', '1.5', '1001', ' 50', '1e3', 250]) {
+      expect(() => limit(value)).toThrow(`${name} must be a whole number from 1 to 1000`);
+    }
+  });
+
+  it('reaches the services as a number, apart from the other limit', async () => {
+    const config = { ...valid(), [name]: '250' };
+    const module = await Test.createTestingModule({ imports: [ConfigModule.forRoot({
+      ignoreEnvFile: true, ignoreEnvVars: true,
+      validate: () => validateEnvironment(config),
+    })] }).compile();
+    try {
+      const other = name === 'MAX_PARTY_SONGS' ? 'MAX_PLAYLIST_SONGS' : 'MAX_PARTY_SONGS';
+      expect(module.get(ConfigService).getOrThrow(name)).toBe(250);
+      expect(module.get(ConfigService).getOrThrow(other)).toBe(100);
+    } finally { await module.close(); }
+  });
+});
+
 describe('JWT secret generation command', () => {
   const script = resolve('scripts/generate-jwt-secrets.cjs');
   let directory: string;

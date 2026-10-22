@@ -7,6 +7,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { SongsService } from '../songs/songs.service';
 import { EditLicense, Playlist, Prisma, ResourceType, Visibility } from '../../generated/prisma';
@@ -20,18 +21,22 @@ import { RealtimeService } from '../realtime/realtime.service';
 const SONG_ORDER: Prisma.PlaylistSongOrderByWithRelationInput[] = [{ position: 'asc' }, { id: 'asc' }];
 // What each song of a playlist comes with, in GET /songs and in the realtime snapshot
 const SONG_ENTRY = { song: true, addedBy: { select: { id: true, name: true } } } satisfies Prisma.PlaylistSongInclude;
-const SNAPSHOT_SONGS_SIZE = 100; // a realtime snapshot holds as many songs as GET /songs' largest page
 // Who owns a playlist, as its card and its page show it: id and name, nothing else
 const OWNER = { select: { id: true, name: true } } satisfies Prisma.UserDefaultArgs;
 
 @Injectable()
 export class PlaylistsService {
+  private readonly maxSongs: number; // how many songs a playlist may hold, and so how many a snapshot carries (MAX_PLAYLIST_SONGS)
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly invitations: InvitationsService,
     private readonly songsService: SongsService,
     private readonly realtime: RealtimeService,
-  ) {}
+    config: ConfigService,
+  ) {
+    this.maxSongs = config.getOrThrow<number>('MAX_PLAYLIST_SONGS');
+  }
 
   create(ownerId: string, dto: CreatePlaylistDto) {
     return this.prisma.playlist.create({
@@ -111,7 +116,7 @@ export class PlaylistsService {
     return this.prisma.$transaction(
       async (tx) => {
         const playlist = await tx.playlist.findUniqueOrThrow({ where: { id: playlistId } });
-        const songs = await tx.playlistSong.findMany({ where: { playlistId }, include: SONG_ENTRY, orderBy: SONG_ORDER, take: SNAPSHOT_SONGS_SIZE });
+        const songs = await tx.playlistSong.findMany({ where: { playlistId }, include: SONG_ENTRY, orderBy: SONG_ORDER, take: this.maxSongs });
         const songsLength = await tx.playlistSong.count({ where: { playlistId } });
         return { playlist, songs, songsLength };
       },
@@ -150,6 +155,12 @@ export class PlaylistsService {
 
     try {
       const added = await this.prisma.$transaction(async (tx) => {
+        // Locked first, wherever the song goes: simultaneous additions count and place one after the other.
+        // A playlist holds at most what one snapshot holds, so everyone always sees all of it.
+        await tx.$queryRaw`SELECT id FROM "Playlist" WHERE id = ${playlistId} FOR UPDATE`;
+        if (await tx.playlistSong.count({ where: { playlistId } }) >= this.maxSongs) {
+          throw new ConflictException(`This playlist is full (${this.maxSongs} songs). Remove a song to add another.`);
+        }
         const position = dto.position ?? (await this.nextPosition(tx, playlistId));
         return tx.playlistSong.create({
           data: { playlistId, songId: song.id, position, addedById: userId },
@@ -253,11 +264,9 @@ export class PlaylistsService {
     return Boolean(match);
   }
 
-  // The position after the last song. It locks the playlist until the transaction ends: a second
-  // addition "at the end" waits here, then reads the song the first one inserted. Without the
-  // lock, simultaneous additions all read the same last position.
+  // The position after the last song. Called with the playlist locked (see addSong): a second addition
+  // "at the end" reads the song the first one inserted, instead of the same last position.
   private async nextPosition(tx: Prisma.TransactionClient, playlistId: string): Promise<number> {
-    await tx.$queryRaw`SELECT id FROM "Playlist" WHERE id = ${playlistId} FOR UPDATE`;
     const last = await tx.playlistSong.findFirst({
       where: { playlistId },
       orderBy: { position: 'desc' },
