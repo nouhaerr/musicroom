@@ -106,14 +106,19 @@ export function partiesApi(client: ApiClient) {
   };
 }
 
+// How long a song counts for in the app: the room's progress bar and the playlist's lengths both use it.
+// EXPO_PUBLIC_SONG_SECONDS (in .env) makes every song count for at most that many seconds; empty, each keeps its real length.
+export function songSeconds(durationSec: number) {
+  const cap = Number(process.env.EXPO_PUBLIC_SONG_SECONDS);
+  return cap > 0 ? Math.min(durationSec, cap) : durationSec;
+}
+
 // How far the song playing is: what the server measured, plus the time since this phone received it.
 // The phone's clock is never compared with the server's. Never outside the song.
-// EXPO_PUBLIC_SONG_SECONDS (in .env) makes every song count for at most that many seconds; empty, each keeps its real length.
 export function progress(snapshot: { party: Pick<Party, 'nowPlaying'>; playingForMs: number | null }, receivedAt: number, now: number) {
   const { nowPlaying } = snapshot.party;
   if (!nowPlaying || typeof snapshot.playingForMs !== 'number') return null;
-  const cap = Number(process.env.EXPO_PUBLIC_SONG_SECONDS);
-  const durationSec = cap > 0 ? Math.min(nowPlaying.durationSec, cap) : nowPlaying.durationSec;
+  const durationSec = songSeconds(nowPlaying.durationSec);
   const elapsedSec = Math.min(Math.max(Math.floor((snapshot.playingForMs + now - receivedAt) / 1000), 0), durationSec);
   return { elapsedSec, durationSec };
 }

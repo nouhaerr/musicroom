@@ -1,17 +1,12 @@
 import { io, type Socket } from 'socket.io-client';
 import type { PartySnapshot } from '../api/parties.ts';
+import type { PlaylistSnapshot } from '../api/playlists.ts';
 
 // The live connection of the app. Screens say what they watch; this keeps the connection, the
 // login and the subscriptions alive behind them. Protocol: music-room-api/README.md, "Temps réel".
 
 export type Target = { type: 'party' | 'playlist'; id: string };
 
-// Typed by the Playlists screens when they exist
-export interface PlaylistSnapshot {
-  playlist: { id: string };
-  songs: unknown[];
-  songsLength: number;
-}
 type Snapshot = PartySnapshot | PlaylistSnapshot;
 
 // Why a watcher will receive nothing more: a refusal code of the server, or the end of the login

@@ -39,3 +39,28 @@ test('a playlist list answer that is not a list is refused instead of being show
   await f.client.login(user.email, 'password');
   await assert.rejects(playlistsApi(f.client).list(1, '', 'PUBLIC'), /Invalid playlists response/);
 });
+
+test('the playlist page, a removal and an answer name the playlist, the song and the invitation in the URL', async () => {
+  const page = { id: 'playlist 1', ownerId: 'bob', name: 'Night Drive', visibility: 'PUBLIC', editLicense: 'EVERYONE', owner: { id: 'bob', name: 'Bob' }, canEdit: true, invitation: null };
+  const f = fixture(url => json(url.pathname.startsWith('/playlists/playlist%201') && !url.pathname.includes('/songs/') ? page : {}));
+  await f.client.login(user.email, 'password');
+  const api = playlistsApi(f.client);
+  assert.deepEqual(await api.page('playlist 1'), page);
+  await api.remove('playlist 1', 'entry/2');
+  await api.answer('invitation/3', true);
+  await api.answer('invitation/3', false);
+  assert.deepEqual(f.calls.slice(1).map(c => [c.url.pathname, c.init.method ?? 'GET', c.init.body === undefined ? null : JSON.parse(String(c.init.body))]), [
+    ['/playlists/playlist%201', 'GET', null],
+    ['/playlists/playlist%201/songs/entry%2F2', 'DELETE', null],
+    ['/invitations/invitation%2F3/accept', 'POST', {}],
+    ['/invitations/invitation%2F3/decline', 'POST', {}],
+  ]);
+});
+
+test('a playlist page answer without its owner or canEdit is refused instead of being shown', async () => {
+  for (const answer of [{}, { owner: { id: 'bob', name: 'Bob' } }, { canEdit: true }, { canEdit: 'yes', owner: { id: 'bob', name: 'Bob' } }]) {
+    const f = fixture(() => json(answer));
+    await f.client.login(user.email, 'password');
+    await assert.rejects(playlistsApi(f.client).page('p'), /Invalid playlist response/);
+  }
+});

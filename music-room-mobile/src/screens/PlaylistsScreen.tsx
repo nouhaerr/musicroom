@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
-import { faLock, faMusic } from '@fortawesome/free-solid-svg-icons';
+import { faChevronRight, faLock, faMusic } from '@fortawesome/free-solid-svg-icons';
 import type { ApiClient } from '../api/client';
 import { PLAYLISTS_PAGE_SIZE, playlistsApi, type Playlist, type PlaylistCard } from '../api/playlists';
+import type { Live } from '../realtime/live';
 import { Action, styles } from '../components/ProfileUI';
+import { PlaylistScreen } from './PlaylistScreen';
 
 const SEARCH_DELAY_MS = 400; // the search starts once the typing stops for this long
 const CHIPS: { visibility: Playlist['visibility']; label: string; empty: string }[] = [
@@ -12,8 +14,8 @@ const CHIPS: { visibility: Playlist['visibility']; label: string; empty: string 
   { visibility: 'PRIVATE', label: 'Private', empty: 'No private playlists yet. The ones you create or are invited to show here.' },
 ];
 
-// The Playlists tab: the playlists you may see, one chip at a time, found by name
-export function PlaylistsScreen({ client }: { client: ApiClient }) {
+// The Playlists tab: the playlists you may see, one chip at a time, found by name, and the way into one of them
+export function PlaylistsScreen({ client, live }: { client: ApiClient; live: Live }) {
   const api = useMemo(() => playlistsApi(client), [client]);
   const [visibility, setVisibility] = useState<Playlist['visibility']>('PUBLIC');
   const [text, setText] = useState('');
@@ -21,7 +23,8 @@ export function PlaylistsScreen({ client }: { client: ApiClient }) {
   const [playlists, setPlaylists] = useState<PlaylistCard[] | null>(null); // null until the first answer: never a false empty list
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [reload, setReload] = useState(0); // counts the reloads asked for: "Try again"
+  const [reload, setReload] = useState(0); // counts the reloads asked for: back from a playlist, "Try again"
+  const [playlistId, setPlaylistId] = useState<string | null>(null);
   const query = text.trim();
 
   // Load a page of playlists. A new search waits for the typing to stop; a late answer is ignored.
@@ -36,8 +39,10 @@ export function PlaylistsScreen({ client }: { client: ApiClient }) {
     return () => { active = false; clearTimeout(timer); };
   }, [api, page, query, visibility, reload]);
 
+  if (playlistId) return <PlaylistScreen client={client} live={live} playlistId={playlistId} onBack={() => { setPlaylistId(null); setReload(n => n + 1); }} />;
+
   const chip = CHIPS.find(each => each.visibility === visibility)!;
-  const card = (playlist: PlaylistCard) => <View key={playlist.id} style={p.card}>
+  const card = (playlist: PlaylistCard) => <Pressable key={playlist.id} accessibilityRole="button" accessibilityLabel={`Open ${playlist.name}`} onPress={() => setPlaylistId(playlist.id)} style={p.card}>
     {playlist.cover ? <Image source={{ uri: playlist.cover }} style={p.cover} />
       : <View style={[p.cover, p.blank]}><FontAwesomeIcon icon={playlist.visibility === 'PRIVATE' ? faLock : faMusic} color="#A9B6FF" size={20} /></View>}
     <View style={p.grow}>
@@ -45,7 +50,8 @@ export function PlaylistsScreen({ client }: { client: ApiClient }) {
       <Text style={styles.text} numberOfLines={1}>{playlist.songsCount} {playlist.songsCount === 1 ? 'track' : 'tracks'} · by {playlist.owner.id === client.user?.id ? 'you' : playlist.owner.name}</Text>
       <Text style={p.rule} numberOfLines={1}>{playlist.visibility === 'PUBLIC' ? 'Public' : 'Private'} · {playlist.editLicense === 'EVERYONE' ? 'Everyone edits' : 'Invitees edit'}</Text>
     </View>
-  </View>;
+    <FontAwesomeIcon icon={faChevronRight} color="#737D91" size={14} />
+  </Pressable>;
 
   return <View style={styles.section}>
     <View style={p.heading}>

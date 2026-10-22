@@ -437,7 +437,7 @@ function Sonora() {
               <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} onBack={() => setArea('profile')} /> : area === 'devices' ?
               <DevicesScreen key={user.id} client={client!} onBusy={setAreaBusy} /> :
               area === 'rooms' ? (live ? <DiscoverScreen key={user.id} client={client!} live={live} /> : null) :
-              area === 'playlists' ? <PlaylistsScreen key={user.id} client={client!} /> :
+              area === 'playlists' ? (live ? <PlaylistsScreen key={user.id} client={client!} live={live} /> : null) :
               <AccountListScreen key={area} client={client!} area={area} />}
           </> : <>
             {screen === 'settings' ? <>

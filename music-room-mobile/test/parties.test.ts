@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiClient, type TokenStorage } from '../src/api/client.ts';
-import { clock, partiesApi, progress, votingWindow, type Song } from '../src/api/parties.ts';
+import { clock, partiesApi, progress, songSeconds, votingWindow, type Song } from '../src/api/parties.ts';
 
 const user = { id: 'alice', email: 'alice@example.test', name: 'Alice', musicPreferences: [] };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -117,6 +117,18 @@ test('the song length setting caps every song, and anything that is not a positi
       process.env.EXPO_PUBLIC_SONG_SECONDS = value;
       assert.deepEqual(progress(snapshot, received, received + 100_000), { elapsedSec: 100, durationSec: 243 });
     }
+  } finally {
+    delete process.env.EXPO_PUBLIC_SONG_SECONDS;
+  }
+});
+
+test('a song counts for its real length, or at most the song length setting', () => {
+  try {
+    delete process.env.EXPO_PUBLIC_SONG_SECONDS;
+    assert.equal(songSeconds(243), 243);
+    process.env.EXPO_PUBLIC_SONG_SECONDS = '30';
+    assert.equal(songSeconds(243), 30);
+    assert.equal(songSeconds(20), 20);
   } finally {
     delete process.env.EXPO_PUBLIC_SONG_SECONDS;
   }
