@@ -2,7 +2,10 @@ import { openEmailInbox } from '../auth/open-email';
 import { acquireFacebookCredential } from '../auth/native-facebook';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Image, ImageBackground, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Image, ImageBackground, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+// The page scroll of gesture-handler: its gestures referee knows it, so dragging a song can take the finger from it
+import { GestureHandlerRootView, ScrollView } from 'react-native-gesture-handler';
+import Animated, { useAnimatedRef } from 'react-native-reanimated';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Linking from 'expo-linking';
@@ -182,7 +185,11 @@ function ResetPasswordScreen({ password, confirm, busy, passwordSubmitted, onPas
   </View>;
 }
 
+// The page scroll, animated: a list that drags its items can then scroll the page when an item reaches its edge
+const PageScroll = Animated.createAnimatedComponent(ScrollView);
+
 function Sonora() {
+  const pageScroll = useAnimatedRef();
   const [client, setClient] = useState<ApiClient | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
@@ -386,7 +393,7 @@ function Sonora() {
   return <SafeAreaView style={[s.safe, profile && { backgroundColor: '#08090d' }]}><StatusBar style="light" />
     <LegalDocuments document={legalDocument} onClose={() => setLegalDocument(null)} />
     <KeyboardAvoidingView style={s.grow} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
+      <PageScroll ref={pageScroll} contentContainerStyle={s.page} keyboardShouldPersistTaps="handled">
         {!profile ? <View style={s.header}><Brand />
           <Pressable accessibilityRole="button" disabled={busy || areaBusy} onPress={() => navigate('settings')}><Text style={s.serverLink}>Server</Text></Pressable>
         </View> : null}
@@ -437,7 +444,7 @@ function Sonora() {
               <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} onBack={() => setArea('profile')} /> : area === 'devices' ?
               <DevicesScreen key={user.id} client={client!} onBusy={setAreaBusy} /> :
               area === 'rooms' ? (live ? <DiscoverScreen key={user.id} client={client!} live={live} /> : null) :
-              area === 'playlists' ? (live ? <PlaylistsScreen key={user.id} client={client!} live={live} /> : null) :
+              area === 'playlists' ? (live ? <PlaylistsScreen key={user.id} client={client!} live={live} pageScroll={pageScroll} /> : null) :
               <AccountListScreen key={area} client={client!} area={area} />}
           </> : <>
             {screen === 'settings' ? <>
@@ -450,7 +457,7 @@ function Sonora() {
           </>}
         </View>}
         {!profile ? <Text style={s.footer}>GOOD MUSIC. BETTER TOGETHER.</Text> : null}
-      </ScrollView>
+      </PageScroll>
       {profile ? <View style={{ flexDirection: 'row', borderTopWidth: 1, borderColor: '#232532', backgroundColor: '#08090d', paddingVertical: 12 }}>
         {(['rooms', 'playlists', 'devices', 'profile'] as const).map(tab => <Pressable key={tab} accessibilityRole="tab" accessibilityState={{ selected: area === tab || (tab === 'profile' && area === 'people') }} disabled={busy || areaBusy} onPress={() => setArea(tab)} style={{ flex: 1, alignItems: 'center', gap: 5, paddingVertical: 5 }}>
           <FontAwesomeIcon icon={tab === 'rooms' ? faTowerBroadcast : tab === 'playlists' ? faList : tab === 'devices' ? faMobileScreen : faUser} size={20} color={area === tab || (tab === 'profile' && area === 'people') ? '#b1baff' : '#8589a1'} />
@@ -461,7 +468,7 @@ function Sonora() {
   </SafeAreaView>;
 }
 
-export default function App() { return <SafeAreaProvider><ToastProvider><Sonora /></ToastProvider></SafeAreaProvider>; }
+export default function App() { return <GestureHandlerRootView style={{ flex: 1 }}><SafeAreaProvider><ToastProvider><Sonora /></ToastProvider></SafeAreaProvider></GestureHandlerRootView>; }
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#10141E' }, grow: { flex: 1 },

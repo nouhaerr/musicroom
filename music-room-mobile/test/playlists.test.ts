@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiClient, type TokenStorage } from '../src/api/client.ts';
-import { playlistsApi } from '../src/api/playlists.ts';
+import { droppedPosition, playlistsApi, type PlaylistEntry } from '../src/api/playlists.ts';
 
 const user = { id: 'alice', email: 'alice@example.test', name: 'Alice', musicPreferences: [] };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -63,4 +63,23 @@ test('a playlist page answer without its owner or canEdit is refused instead of 
     await f.client.login(user.email, 'password');
     await assert.rejects(playlistsApi(f.client).page('p'), /Invalid playlist response/);
   }
+});
+
+// A song of a playlist with only what the drag maths reads
+const at = (id: string, position: number) => ({ id, position }) as PlaylistEntry;
+
+test('a dropped song goes halfway between its new neighbours, or one step past the end it reached', () => {
+  const [a, b, c, d] = [at('a', 1), at('b', 2), at('c', 3), at('d', 4)];
+  assert.equal(droppedPosition([a, d, b, c], 1), 1.5); // between a and b
+  assert.equal(droppedPosition([d, a, b, c], 0), 0); // first: one step before a
+  assert.equal(droppedPosition([b, c, d, a], 3), 5); // last: one step after d
+  assert.equal(droppedPosition([a], 0), 1); // alone: its own place
+});
+
+test('a move names the playlist and the song, and sends the place the song had when it was seen', async () => {
+  const f = fixture(() => json({}));
+  await f.client.login(user.email, 'password');
+  await playlistsApi(f.client).move('playlist 1', 'entry/2', 1.5, 4);
+  assert.deepEqual([f.calls[1].url.pathname, f.calls[1].init.method, JSON.parse(String(f.calls[1].init.body))],
+    ['/playlists/playlist%201/songs/entry%2F2', 'PATCH', { position: 1.5, expectedPosition: 4 }]);
 });

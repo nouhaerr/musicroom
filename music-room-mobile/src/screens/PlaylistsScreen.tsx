@@ -4,6 +4,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faChevronRight, faLock, faMusic } from '@fortawesome/free-solid-svg-icons';
 import type { ApiClient } from '../api/client';
 import { PLAYLISTS_PAGE_SIZE, playlistsApi, type Playlist, type PlaylistCard } from '../api/playlists';
+import type { AnimatedRef } from 'react-native-reanimated';
 import type { Live } from '../realtime/live';
 import { Action, styles } from '../components/ProfileUI';
 import { PlaylistScreen } from './PlaylistScreen';
@@ -15,7 +16,7 @@ const CHIPS: { visibility: Playlist['visibility']; label: string; empty: string 
 ];
 
 // The Playlists tab: the playlists you may see, one chip at a time, found by name, and the way into one of them
-export function PlaylistsScreen({ client, live }: { client: ApiClient; live: Live }) {
+export function PlaylistsScreen({ client, live, pageScroll }: { client: ApiClient; live: Live; pageScroll: AnimatedRef }) {
   const api = useMemo(() => playlistsApi(client), [client]);
   const [visibility, setVisibility] = useState<Playlist['visibility']>('PUBLIC');
   const [text, setText] = useState('');
@@ -39,7 +40,7 @@ export function PlaylistsScreen({ client, live }: { client: ApiClient; live: Liv
     return () => { active = false; clearTimeout(timer); };
   }, [api, page, query, visibility, reload]);
 
-  if (playlistId) return <PlaylistScreen client={client} live={live} playlistId={playlistId} onBack={() => { setPlaylistId(null); setReload(n => n + 1); }} />;
+  if (playlistId) return <PlaylistScreen client={client} live={live} pageScroll={pageScroll} playlistId={playlistId} onBack={() => { setPlaylistId(null); setReload(n => n + 1); }} />;
 
   const chip = CHIPS.find(each => each.visibility === visibility)!;
   const card = (playlist: PlaylistCard) => <Pressable key={playlist.id} accessibilityRole="button" accessibilityLabel={`Open ${playlist.name}`} onPress={() => setPlaylistId(playlist.id)} style={p.card}>

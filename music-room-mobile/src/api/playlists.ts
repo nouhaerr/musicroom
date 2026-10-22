@@ -38,6 +38,17 @@ export interface PlaylistSnapshot {
 
 export const PLAYLISTS_PAGE_SIZE = 20;
 
+// The place of a song dropped at `toIndex` of the new order: halfway between its new neighbours, one step past the
+// end it reached, or its own place if it is alone. No other song changes place.
+export function droppedPosition(order: PlaylistEntry[], toIndex: number) {
+  const before = order[toIndex - 1];
+  const after = order[toIndex + 1];
+  if (before && after) return (before.position + after.position) / 2;
+  if (before) return before.position + 1;
+  if (after) return after.position - 1;
+  return order[toIndex].position;
+}
+
 // The calls of the Playlists tab
 export function playlistsApi(client: ApiClient) {
   const id = encodeURIComponent;
@@ -58,5 +69,9 @@ export function playlistsApi(client: ApiClient) {
     // Accepting an invitation to an "invitees edit" playlist is what lets me change its songs
     answer: (invitationId: string, accept: boolean) =>
       client.request(`/invitations/${id(invitationId)}/${accept ? 'accept' : 'decline'}`, 'POST', {}),
+    // The place the song had when the user saw it goes along: if someone moved it meanwhile, the server refuses (409)
+    // instead of overwriting their move
+    move: (playlistId: string, entryId: string, position: number, expectedPosition: number) =>
+      client.request(`/playlists/${id(playlistId)}/songs/${id(entryId)}`, 'PATCH', { position, expectedPosition }),
   };
 }
