@@ -1,7 +1,7 @@
 import * as Location from 'expo-location';
 import type { Position } from './api/parties';
 
-const RECENT_MS = 5 * 60_000; // leaving a party and getting far from it takes about five minutes
+const RECENT_MS = 2 * 60_000; // a position stays usable 2 minutes: in that time nobody gets far from the venue
 let latest: { position: Position; at: number } | null = null; // the last reading, and when it ended on this phone's clock
 
 // The last reading if it is recent enough to tell where the phone is, otherwise null. Instant.
