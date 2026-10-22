@@ -7,10 +7,16 @@ import { Platform } from '../../generated/prisma';
 export class DevicesService {
   constructor(private readonly prisma: PrismaService) {}
 
-  // Un utilisateur peut avoir plusieurs appareils ; on enregistre une entrée
-  // à chaque appel (le mobile appelle ça une fois au démarrage de l'app et
-  // garde le device.id retourné pour les headers X-Device-Id suivants).
-  register(userId: string, data: { platform: Platform; model: string; appVersion: string }) {
+  // One registration per account and installation; legacy clients without an
+  // installation UUID retain the original create behavior.
+  register(userId: string, data: { platform: Platform; model: string; appVersion: string; installationId?: string }) {
+    if (data.installationId) {
+      return this.prisma.device.upsert({
+        where: { userId_installationId: { userId, installationId: data.installationId } },
+        create: { userId, ...data },
+        update: { platform: data.platform, model: data.model, appVersion: data.appVersion },
+      });
+    }
     return this.prisma.device.create({
       data: { userId, platform: data.platform, model: data.model, appVersion: data.appVersion },
     });

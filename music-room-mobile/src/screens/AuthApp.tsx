@@ -7,9 +7,13 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as Linking from 'expo-linking';
 import Constants from 'expo-constants';
+import * as Device from 'expo-device';
+import { randomUUID } from 'expo-crypto';
+import { ToastProvider, useScreenToast } from '../components/Toast';
 import { ApiClient, ApiError, normalizeBaseUrl, tokenFromInput, type User } from '../api/client';
 import { secureStorage } from '../storage';
 import { AccountListScreen } from './AccountListScreen';
+import { DevicesScreen } from './DevicesScreen';
 import { ProfileScreen } from './ProfileScreen';
 import { PeopleScreen } from './PeopleScreen';
 import { PlaylistsScreen } from './PlaylistsScreen';
@@ -30,9 +34,9 @@ const SERVER_KEY = 'sonora.server.v1';
 function createClient(url: string) {
   return new ApiClient(url, secureStorage, fetch, {
     platform: Platform.OS === 'ios' ? 'IOS' : 'ANDROID',
-    model: `${Platform.OS} ${Platform.Version}`,
+    model: Device.modelName ?? `${Platform.OS} device`,
     appVersion: Constants.expoConfig?.version ?? '0.1.0',
-  });
+  }, randomUUID);
 }
 const defaultServer = process.env.EXPO_PUBLIC_API_URL || (Platform.OS === 'android' ? 'http://10.0.2.2:3000' : 'http://localhost:3000');
 function PasswordFields({ password, confirm, onPassword, onConfirm, submitted, reset = false }: {
@@ -82,8 +86,8 @@ function RegisterScreen({ name, email, password, confirm, termsAccepted, busy, r
     <Text style={s.registerEyebrow}>JOIN SONORA</Text>
     <Text style={s.registerTitle}>Your next favorite{`\n`}starts here.</Text>
     <Text style={s.registerSubtitle}>A little about you. A lot of good music.</Text>
-    <Field label="Your name" value={name} change={onName} maxLength={100} icon={faUser} />
-    <Field label="Email address" email value={email} change={onEmail} icon={faEnvelope} />
+    <Field required submitted={passwordSubmitted} label="Your name" value={name} change={onName} maxLength={100} icon={faUser} />
+    <Field required submitted={passwordSubmitted} label="Email address" email value={email} change={onEmail} icon={faEnvelope} />
     <PasswordFields password={password} confirm={confirm} onPassword={onPassword} onConfirm={onConfirm} submitted={passwordSubmitted} />
     <View style={s.termsRow}>
       <Pressable accessibilityRole="checkbox" accessibilityLabel="Accept Terms of Service and Privacy Policy" accessibilityState={{ checked: termsAccepted, disabled: busy }} disabled={busy} onPress={onTerms} style={s.checkboxTouch}>
@@ -91,6 +95,7 @@ function RegisterScreen({ name, email, password, confirm, termsAccepted, busy, r
       </Pressable>
       <Text style={s.termsText}>I agree to the <Text accessibilityRole="link" style={s.termsLink} onPress={() => onDocument('terms')}>Terms of Service</Text> and <Text accessibilityRole="link" style={s.termsLink} onPress={() => onDocument('privacy')}>Privacy Policy</Text>.</Text>
     </View>
+    {passwordSubmitted && !termsAccepted ? <Text accessibilityRole="alert" style={s.error}>Accept the terms to create your account.</Text> : null}
     <Button title="Create account  →" accent disabled={busy} onPress={onSubmit} />
     <View style={s.divider}><View style={s.dividerLine} /><Text style={s.dividerText}>or continue with</Text><View style={s.dividerLine} /></View>
     <View style={{ flexDirection: 'row', gap: 12 }}>
@@ -104,16 +109,17 @@ function RegisterScreen({ name, email, password, confirm, termsAccepted, busy, r
   </View>;
 }
 
-function LoginScreen({ email, password, busy, ready, onEmail, onPassword, onSubmit, onGoogle, onFacebook, onForgot, onRegister }: {
-  email: string; password: string; busy: boolean; ready: boolean; onEmail: (value: string) => void; onPassword: (value: string) => void;
+function LoginScreen({ formError, submitted, email, password, busy, ready, onEmail, onPassword, onSubmit, onGoogle, onFacebook, onForgot, onRegister }: {
+  formError: string; submitted: boolean; email: string; password: string; busy: boolean; ready: boolean; onEmail: (value: string) => void; onPassword: (value: string) => void;
   onSubmit: () => void; onGoogle: () => void; onFacebook: () => void; onForgot: () => void; onRegister: () => void;
 }) {
   return <View style={s.registerPanel}>
     <Text style={s.registerEyebrow}>WELCOME BACK</Text>
     <Text style={s.registerTitle}>Back for an encore.</Text>
     <Text style={s.registerSubtitle}>Your people. Your playlists. Your room.</Text>
-    <Field label="Email address" email value={email} change={onEmail} icon={faEnvelope} />
-    <View style={s.passwordField}><Field label="Password" password value={password} change={onPassword} /><Pressable accessibilityRole="button" onPress={onForgot} style={s.forgotLink}><Text style={s.forgotText}>Forgot password?</Text></Pressable></View>
+    <Field required submitted={submitted} label="Email address" email value={email} change={onEmail} icon={faEnvelope} />
+    <View style={s.passwordField}><Field required submitted={submitted} label="Password" password value={password} change={onPassword} /><Pressable accessibilityRole="button" onPress={onForgot} style={s.forgotLink}><Text style={s.forgotText}>Forgot password?</Text></Pressable></View>
+    {formError ? <Text accessibilityRole="alert" style={s.error}>{formError}</Text> : null}
     <Button title="Log in  →" accent disabled={busy} onPress={onSubmit} />
     <View style={s.divider}><View style={s.dividerLine} /><Text style={s.dividerText}>or continue with</Text><View style={s.dividerLine} /></View>
     <View style={{ flexDirection: 'row', gap: 12 }}>
@@ -143,15 +149,15 @@ function VerifyScreen({ email, busy, onOpenEmail, onResend, onLogin }: {
   </View>;
 }
 
-function ForgotPasswordScreen({ email, busy, onEmail, onSubmit, onLogin }: {
-  email: string; busy: boolean; onEmail: (value: string) => void; onSubmit: () => void; onLogin: () => void;
+function ForgotPasswordScreen({ submitted, email, busy, onEmail, onSubmit, onLogin }: {
+  submitted: boolean; email: string; busy: boolean; onEmail: (value: string) => void; onSubmit: () => void; onLogin: () => void;
 }) {
   return <View style={s.registerPanel}>
     <Text style={s.verifyTop}>RESET PASSWORD</Text>
     <Text style={s.registerTitle}>Let’s get you back in.</Text>
     <View style={s.mailCircle}><FontAwesomeIcon icon={faKey} color="#A9B6FF" size={42} /></View>
     <Text style={s.verifyText}>Forgot your password? Enter your account email and we’ll send a secure reset link.</Text>
-    <Field label="Email address" email value={email} change={onEmail} icon={faEnvelope} />
+    <Field required submitted={submitted} label="Email address" email value={email} change={onEmail} icon={faEnvelope} />
     <Button title="Send reset link  →" accent disabled={busy} onPress={onSubmit} />
     <View style={s.verifyPanel}><Text style={s.verifyPanelTitle}>What happens next?</Text><Text style={s.verifyText}>Follow the link in your email to choose a new password. For your security, the link is valid for 30 minutes.</Text></View>
     <Pressable accessibilityRole="button" onPress={onLogin} style={s.registerLoginLink}><Text style={s.loginLinkStrong}>Back to login</Text></Pressable>
@@ -192,10 +198,15 @@ function Sonora() {
   const [legalDocument, setLegalDocument] = useState<LegalDocument | null>(null);
   const [link, setLink] = useState('');
   const [server, setServer] = useState(defaultServer);
+  const [serverError, setServerError] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   useAutoDismiss(notice, setNotice);
-  useAutoDismiss(error, setError);
+  const [networkError, setNetworkError] = useState(false);
+  const lastOperation = useRef<(() => Promise<void>) | null>(null);
+  useAutoDismiss(networkError ? '' : error, setError);
+  useScreenToast(screen === 'login' && !networkError ? '' : error, notice, networkError && error ? () => { if (lastOperation.current) void run(lastOperation.current); } : undefined);
+  const [formSubmitted, setFormSubmitted] = useState(false);
   const [area, setArea] = useState<'profile' | 'people' | 'rooms' | 'playlists' | 'devices'>('profile');
   // The live connection of the party pages lives as long as its API client
   const [live, setLive] = useState<Live | null>(null);
@@ -261,7 +272,7 @@ function Sonora() {
   }, []);
 
   function navigate(next: Screen) {
-    clearFormFields(); setError(''); setNotice(''); setScreen(next);
+    clearFormFields(); setNetworkError(false); setFormSubmitted(false); setError(''); setNotice(''); setScreen(next);
   }
   function clearFormFields() {
     setPasswordSubmitted(false);
@@ -269,9 +280,10 @@ function Sonora() {
   }
   async function run(action: () => Promise<void>) {
     if (working.current) return;
-    working.current = true; setBusy(true); setError(''); setNotice('');
+    working.current = true; lastOperation.current = action; setNetworkError(false); setBusy(true); setError(''); setNotice('');
     try { await action(); }
     catch (e) {
+      setNetworkError(e instanceof ApiError && e.status === 0);
       setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
       if (e instanceof ApiError && e.status === 403 && screen === 'login') { clearFormFields(); setEmail(email); setScreen('verify'); }
     } finally { working.current = false; setBusy(false); }
@@ -280,12 +292,19 @@ function Sonora() {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) throw new Error('Enter a valid email address.');
   }
   async function submit() {
+    setFormSubmitted(true);
+    if (screen === 'register' || screen === 'reset') setPasswordSubmitted(true);
+    if (['login', 'register', 'forgot'].includes(screen) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return;
+    if (screen === 'login' && !password) return;
+    if (screen === 'register' && (!name.trim() || !termsAccepted)) { setPasswordSubmitted(true); return; }
     if (screen === 'register' || screen === 'reset') {
       setPasswordSubmitted(true);
       if (!passwordValidation(password, confirm).valid) return;
     }
     if (screen === 'settings') {
-      const url = normalizeBaseUrl(server);
+      let url: string;
+      try { url = normalizeBaseUrl(server); setServerError(''); }
+      catch (e) { setServerError(e instanceof Error ? e.message : 'Enter a valid server address.'); return; }
       if (client?.baseUrl === url) { navigate('login'); return; }
       let warning = '';
       try { await client?.logout(); } catch (e) { warning = e instanceof Error ? e.message : ''; }
@@ -376,8 +395,6 @@ function Sonora() {
           <Text style={s.subtitle}>Choose the backend used by this device.</Text>
         </View>}
         {!ready && screen !== 'welcome' && screen !== 'register' && screen !== 'login' && screen !== 'verify' && screen !== 'forgot' && screen !== 'reset' ? <ActivityIndicator accessibilityLabel="Restoring session" color="#B7F576" size="large" /> : screen === 'welcome' && !user ? <WelcomeScreen onRegister={() => navigate('register')} onLogin={() => navigate('login')} /> : screen === 'register' && !user ? <>
-          {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
-          {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
           <Pressable accessibilityRole="button" onPress={() => navigate('welcome')} style={s.backWelcome}>
             <Text style={s.backWelcomeText}>← Welcome</Text>
           </Pressable>
@@ -386,31 +403,21 @@ function Sonora() {
             onDocument={setLegalDocument}
             onSubmit={() => void run(submit)} onGoogle={() => void run(googleLogin)} onFacebook={() => void run(facebookLogin)} onLogin={() => navigate('login')} />
         </> : screen === 'login' && !user ? <>
-          {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
-          {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
           <Pressable accessibilityRole="button" onPress={() => navigate('welcome')} style={s.backWelcome}><Text style={s.backWelcomeText}>← Welcome</Text></Pressable>
-          <LoginScreen email={email} password={password} busy={busy} ready={ready} onEmail={setEmail} onPassword={setPassword}
+          <LoginScreen submitted={formSubmitted} formError={networkError ? '' : error} email={email} password={password} busy={busy} ready={ready} onEmail={setEmail} onPassword={setPassword}
             onSubmit={() => void run(submit)} onGoogle={() => void run(googleLogin)} onFacebook={() => void run(facebookLogin)} onForgot={() => navigate('forgot')} onRegister={() => navigate('register')} />
         </> : screen === 'verify' && !user ? <>
-          {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
-          {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
           <Pressable accessibilityRole="button" onPress={() => navigate('welcome')} style={s.backWelcome}><Text style={s.backWelcomeText}>← Welcome</Text></Pressable>
           <VerifyScreen email={email} busy={busy} onOpenEmail={openEmailApp}
             onResend={() => void run(async () => { validateEmail(); await client!.resend(email); setNotice('If this account is eligible, you will receive an email.'); })} onLogin={() => navigate('login')} />
         </> : screen === 'forgot' && !user ? <>
-          {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
-          {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
           <Pressable accessibilityRole="button" onPress={() => navigate('welcome')} style={s.backWelcome}><Text style={s.backWelcomeText}>← Welcome</Text></Pressable>
-          <ForgotPasswordScreen email={email} busy={busy} onEmail={setEmail} onSubmit={() => void run(submit)} onLogin={() => navigate('login')} />
+          <ForgotPasswordScreen submitted={formSubmitted} email={email} busy={busy} onEmail={setEmail} onSubmit={() => void run(submit)} onLogin={() => navigate('login')} />
         </> : screen === 'reset' ? <>
-          {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
-          {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
           <Pressable accessibilityRole="button" onPress={() => navigate('welcome')} style={s.backWelcome}><Text style={s.backWelcomeText}>← Welcome</Text></Pressable>
           <ResetPasswordScreen password={password} confirm={confirm} busy={busy} passwordSubmitted={passwordSubmitted} onPassword={setPassword} onConfirm={setConfirm}
             onSubmit={() => void run(submit)} onLogin={() => navigate('login')} />
         </> : <View style={profile ? { gap: 12 } : s.card}>
-          {error ? <Text accessibilityRole="alert" style={s.error}>{error}</Text> : null}
-          {notice ? <Text accessibilityLiveRegion="polite" style={s.notice}>{notice}</Text> : null}
           {!profile && screen !== 'settings' ? <Pressable accessibilityRole="button" onPress={() => navigate('welcome')} style={s.backWelcome}>
             <Text style={s.backWelcomeText}>← Welcome</Text>
           </Pressable> : null}
@@ -427,14 +434,15 @@ function Sonora() {
                 setServer(url); setClient(createClient(url)); navigate('login'); setArea('profile');
                 setNotice(warning || 'Backend address saved.');
               }} /> : area === 'people' ?
-              <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} /> :
+              <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} onBack={() => setArea('profile')} /> : area === 'devices' ?
+              <DevicesScreen key={user.id} client={client!} onBusy={setAreaBusy} /> :
               area === 'rooms' ? (live ? <DiscoverScreen key={user.id} client={client!} live={live} /> : null) :
               area === 'playlists' ? <PlaylistsScreen key={user.id} client={client!} /> :
               <AccountListScreen key={area} client={client!} area={area} />}
           </> : <>
             {screen === 'settings' ? <>
               <Text style={s.muted}>On a phone, enter your computer’s IP address on the same Wi-Fi. Changing the server signs you out.</Text>
-              <Field label="Backend address" value={server} change={setServer} />
+              <Field label="Backend address" value={server} change={value => { setServer(value); setServerError(''); }} feedback={serverError ? [{ valid: false, message: serverError }] : []} />
               <Text style={s.hint}>Use HTTPS for a server accessible over the internet.</Text>
             </> : null}
             <Button title={busy ? 'Please wait…' : labels[screen]} disabled={busy} onPress={() => void run(submit)} />
@@ -453,7 +461,7 @@ function Sonora() {
   </SafeAreaView>;
 }
 
-export default function App() { return <SafeAreaProvider><Sonora /></SafeAreaProvider>; }
+export default function App() { return <SafeAreaProvider><ToastProvider><Sonora /></ToastProvider></SafeAreaProvider>; }
 
 const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#10141E' }, grow: { flex: 1 },

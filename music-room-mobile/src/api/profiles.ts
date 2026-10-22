@@ -1,6 +1,8 @@
 export type ProfileInfo = Record<string, unknown> | null;
 
 export interface PublicProfile {
+  relationship?: 'NONE' | 'OUTGOING' | 'INCOMING' | 'FRIENDS';
+  friendRequestId?: string | null;
   id: string;
   name: string;
   username?: string | null;
@@ -24,6 +26,14 @@ export interface ProfileDraft {
   friendsBio: string;
   privateBio: string;
   genres: string;
+}
+
+/** Keep editable text only; photos use the dedicated avatar endpoint. */
+export function editableInfo(info: ProfileInfo | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(info ?? {}).filter(([key, value]) =>
+    !['avatar', 'username', 'shareListeningActivity'].includes(key) &&
+    key.length <= 50 && typeof value === 'string' && value.length <= 500,
+  ).slice(0, 20)) as Record<string, string>;
 }
 
 export function bio(info: ProfileInfo | undefined): string {
@@ -50,17 +60,17 @@ export function profileChanges(original: OwnProfile, draft: ProfileDraft) {
   // PATCH replaces each JSON object: retain fields created by another client.
   return {
     name, musicPreferences,
-    publicInfo: { ...original.publicInfo, bio: draft.publicBio.trim() },
-    friendsOnlyInfo: { ...original.friendsOnlyInfo, bio: draft.friendsBio.trim() },
-    privateInfo: { ...original.privateInfo, bio: draft.privateBio.trim() },
+    publicInfo: { ...editableInfo(original.publicInfo), bio: draft.publicBio.trim() },
+    friendsOnlyInfo: { ...editableInfo(original.friendsOnlyInfo), bio: draft.friendsBio.trim() },
+    privateInfo: { ...editableInfo(original.privateInfo), bio: draft.privateBio.trim() },
   };
 }
 
 /** Display only the two sections the other-profile endpoint can expose. */
 export function visibleProfileSections(profile: PublicProfile) {
-  const sections = [{ title: 'Informations publiques', info: profile.publicInfo }];
+  const sections = [{ title: 'Public information', info: profile.publicInfo }];
   if (Object.hasOwn(profile, 'friendsOnlyInfo')) {
-    sections.push({ title: 'Informations partagées avec les amis', info: profile.friendsOnlyInfo ?? null });
+    sections.push({ title: 'Friends-only information', info: profile.friendsOnlyInfo ?? null });
   }
   return sections;
 }

@@ -29,7 +29,6 @@ Les écrans invitations/appareils et les services musicaux
 ne sont pas encore implémentés. Facebook natif est intégré pour une development build ;
 voir [Facebook natif](docs/FACEBOOK-NATIVE.md). La recette réelle reste à effectuer. Les tests de confidentialité backend existent ;
 ils ne constituent pas une validation visuelle des écrans sur téléphone.
-Voir le [suivi du sujet](docs/SUBJECT-PROGRESS.md) pour les étapes restantes.
 
 ## Démarrer
 
@@ -186,3 +185,24 @@ côté mobile et API. Les retours sous les champs apparaissent après saisie, so
 champ ou tentative d’envoi ; aucun message de validation ne s’affiche initialement.
 La confirmation se recalcule quand l’un des mots de passe change. Les mots de passe
 existants restent acceptés sur la route de connexion.
+
+### Device metadata and action logs
+
+The API client sends platform, model (`expo-device`) and app version on every HTTP
+request, including registration, login and password reset. Device ownership still
+requires authentication; metadata headers are descriptive only. The backend records
+completed HTTP responses, including 401/429, without bodies or token query strings.
+Purely local UI interactions are not sent as action logs.
+
+After pulling the `expo-device` dependency, rebuild the development client with
+`npm run dev:ios` (or `npm run dev:android`); a Metro reload alone is insufficient.
+
+Device registration uses a random installation UUID stored in secure storage, independent
+of the account and backend address. The server upserts `(userId, installationId)` and
+refreshes the model/version on registration. Switching back to an account or using an
+alias for the same server reuses its registration. Separate databases still have separate
+registrations. Clearing app storage can create a new installation identity.
+
+Existing legacy registrations have no installation UUID. They cannot safely be merged
+by model (two real phones can have the same model); detach obsolete entries manually.
+Apply the new API migration before running this mobile version.

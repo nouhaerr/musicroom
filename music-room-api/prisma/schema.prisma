@@ -130,6 +130,7 @@ model FriendRequest {
 // =========================================================
 
 model Device {
+  installationId String?
   id         String   @id @default(uuid())
   userId     String
   platform   Platform
@@ -142,6 +143,7 @@ model Device {
   actionLogs         ActionLog[]
 
   @@index([userId])
+  @@unique([userId, installationId])
 }
 
 // Licence de contrôle musique, spécifique à un appareil (comme demandé par le sujet)

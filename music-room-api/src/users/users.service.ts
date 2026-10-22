@@ -79,15 +79,29 @@ export class UsersService {
     return this.prisma.user.update({ where: { id: userId }, data: { passwordHash } });
   }
 
-  search(query: SearchUsersDto) {
-    return this.prisma.user.findMany({
+  async search(query: SearchUsersDto, viewerId: string) {
+    const escape = (text: string) => text.replace(/[\\%_]/g, character => `\\${character}`);
+    const users = await this.prisma.user.findMany({
       where: {
-        ...(query.q ? { OR: [{ name: { contains: query.q.trim(), mode: 'insensitive' as const } }, { username: { contains: query.q.trim().replace(/^@/, ''), mode: 'insensitive' as const } }] } : {}),
+        ...(query.q ? { OR: [{ name: { contains: escape(query.q.trim()), mode: 'insensitive' as const } }, { username: { contains: escape(query.q.trim().replace(/^@/, '')), mode: 'insensitive' as const } }] } : {}),
         ...(query.genre ? { musicPreferences: { has: query.genre } } : {}),
       },
-      select: publicProfileSelect,
+      select: { ...publicProfileSelect, friends: { where: { id: viewerId }, select: { id: true } } },
       orderBy: [{ name: 'asc' }, { id: 'asc' }],
       ...paginate(query),
+    });
+    const ids = users.map(user => user.id);
+    const pending = await this.prisma.friendRequest.findMany({ where: {
+      status: 'PENDING', OR: [
+        { senderId: viewerId, receiverId: { in: ids } },
+        { receiverId: viewerId, senderId: { in: ids } },
+      ],
+    }, select: { id: true, senderId: true, receiverId: true } });
+    return users.map(({ friends, ...user }) => {
+      const request = pending.find(item => item.senderId === user.id || item.receiverId === user.id);
+      return { ...user, relationship: friends.length ? 'FRIENDS' : request
+        ? request.senderId === viewerId ? 'OUTGOING' : 'INCOMING' : 'NONE',
+        friendRequestId: friends.length ? null : request?.id ?? null };
     });
   }
 

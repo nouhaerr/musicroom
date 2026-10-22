@@ -13,21 +13,22 @@ export class UpdateProfileDto {
   @ApiPropertyOptional()
   @ValidateIf((_object, value) => value !== undefined)
   @IsString()
+  @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
   @MinLength(1)
   @MaxLength(100)
   name?: string;
 
-  @ApiPropertyOptional({ description: 'Informations visibles par tous' })
+  @ApiPropertyOptional({ description: 'Visible to authenticated users. Up to 20 text fields, keys up to 50 characters, values up to 500.' })
   @ValidateIf((_object, value) => value !== undefined)
   @IsObject()
   publicInfo?: Record<string, unknown>;
 
-  @ApiPropertyOptional({ description: 'Informations visibles par les amis uniquement' })
+  @ApiPropertyOptional({ description: 'Friends only. Up to 20 text fields, keys up to 50 characters, values up to 500.' })
   @ValidateIf((_object, value) => value !== undefined)
   @IsObject()
   friendsOnlyInfo?: Record<string, unknown>;
 
-  @ApiPropertyOptional({ description: "Informations visibles par l'utilisateur uniquement" })
+  @ApiPropertyOptional({ description: "Only you. Up to 20 text fields, keys up to 50 characters, values up to 500." })
   @ValidateIf((_object, value) => value !== undefined)
   @IsObject()
   privateInfo?: Record<string, unknown>;

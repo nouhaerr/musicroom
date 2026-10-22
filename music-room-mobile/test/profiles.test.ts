@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiClient, type TokenStorage } from '../src/api/client.ts';
-import { profileChanges, profileDraft, visibleProfileSections, usersQuery, type OwnProfile } from '../src/api/profiles.ts';
+import { editableInfo, profileChanges, profileDraft, visibleProfileSections, usersQuery, type OwnProfile } from '../src/api/profiles.ts';
 import { socialApi } from '../src/api/social.ts';
 
 const me: OwnProfile = {
@@ -35,8 +35,8 @@ test('profile editing keeps unrelated JSON fields in their original visibility t
   assert.equal(changes.name, 'Alice B');
   assert.deepEqual(changes.musicPreferences, ['jazz', 'rock', 'soul']);
   assert.deepEqual(changes.publicInfo, { bio: 'Nouveau', city: 'Paris' });
-  assert.deepEqual(changes.friendsOnlyInfo, me.friendsOnlyInfo);
-  assert.deepEqual(changes.privateInfo, me.privateInfo);
+  assert.deepEqual(changes.friendsOnlyInfo, { bio: 'Pour mes amis' });
+  assert.deepEqual(changes.privateInfo, { bio: 'Pour moi' });
   assert.equal(me.publicInfo?.bio, 'Bonjour');
   assert.equal(Object.hasOwn(changes, 'email'), false);
 });
@@ -107,7 +107,7 @@ test('a profile response arriving after logout cannot restore personal data to t
 test('other-profile sections never render private fields, email or social identifiers', () => {
   const received = { ...me, googleId: 'not-for-display' };
   const sections = visibleProfileSections(received);
-  assert.deepEqual(sections.map(s => s.title), ['Informations publiques', 'Informations partagées avec les amis']);
+  assert.deepEqual(sections.map(s => s.title), ['Public information', 'Friends-only information']);
   const rendered = JSON.stringify(sections);
   assert.equal(rendered.includes(me.email), false);
   assert.equal(rendered.includes('Pour moi'), false);
@@ -190,4 +190,34 @@ test('password setup targets the authenticated account without accepting an emai
   assert.equal(call.init.method, 'POST');
   assert.equal(call.init.body, undefined);
   assert.ok(new Headers(call.init.headers).get('Authorization'));
+});
+
+
+test('editable profile payloads omit photos, legacy sharing and non-text fields', () => {
+  assert.deepEqual(editableInfo({ bio: 'Hello', avatar: 'data:image/jpeg;base64,image',
+    shareListeningActivity: true, nested: { a: 'b' }, huge: 'x'.repeat(501), city: 'Paris' }),
+  { bio: 'Hello', city: 'Paris' });
+});
+
+test('detaching another device uses the authenticated DELETE and protects this device', async () => {
+  const { detachDevice } = await import('../src/api/devices.ts');
+  const { client, calls } = fixture(() => json({ deleted: true }));
+  await client.login(me.email, 'password123');
+  await client.registerDevice('IOS', 'iPhone');
+  assert.equal(client.currentDeviceId, 'device-alice');
+  await detachDevice(client, 'other-device');
+  const call = calls.at(-1)!;
+  assert.equal(call.url.pathname, '/devices/other-device');
+  assert.equal(call.init.method, 'DELETE');
+  assert.equal(new Headers(call.init.headers).get('X-Device-Id'), 'device-alice');
+  const count = calls.length;
+  await assert.rejects(detachDevice(client, 'device-alice'), /Log out/);
+  assert.equal(calls.length, count);
+});
+
+test('a failed device deletion is surfaced instead of reported as detached', async () => {
+  const { detachDevice } = await import('../src/api/devices.ts');
+  const { client } = fixture(() => json({ message: 'Device not found' }, 404));
+  await client.login(me.email, 'password123');
+  await assert.rejects(detachDevice(client, 'missing'), /Device not found/);
 });

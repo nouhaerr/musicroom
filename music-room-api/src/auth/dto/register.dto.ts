@@ -17,6 +17,7 @@ export class RegisterDto {
 
   @ApiProperty()
   @IsString()
+  @Transform(({ value }) => typeof value === 'string' ? value.trim() : value)
   @MinLength(1)
   @MaxLength(100)
   name!: string;

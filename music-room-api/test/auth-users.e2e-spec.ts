@@ -337,7 +337,9 @@ describe('Friend requests and profile visibility', () => {
     expect(responses.every(r => r.status === 201)).toBe(true);
     expect(responses.some(r => r.body.status === 'ACCEPTED')).toBe(true);
     expect(await db.friendRequest.count({ where: { status: 'PENDING', OR: [{ senderId: a.id }, { receiverId: a.id }] } })).toBe(0);
-    for (const viewer of [undefined, c.accessToken]) {
+    expect((await request('GET', `/users/${a.id}`)).status).toBe(401);
+    expect((await request('GET', '/users/search')).status).toBe(401);
+    for (const viewer of [c.accessToken]) {
       const profile = (await request('GET', `/users/${a.id}`, undefined, viewer)).body;
       expect(profile.publicInfo.bio).toBe('public');
       for (const field of ['email', 'passwordHash', 'privateInfo', 'friendsOnlyInfo', 'googleId']) expect(profile).not.toHaveProperty(field);
@@ -346,13 +348,13 @@ describe('Friend requests and profile visibility', () => {
     expect(friend.friendsOnlyInfo.bio).toBe('friends');
     expect(friend).not.toHaveProperty('privateInfo');
     expect((await request('GET', `/users/${a.id}`, undefined, a.accessToken)).body.privateInfo.bio).toBe('private');
-    const search = await request('GET', '/users/search?q=Jazz&genre=JAZZ&page=1&limit=1');
+    const search = await request('GET', '/users/search?q=Jazz&genre=JAZZ&page=1&limit=1', undefined, a.accessToken);
     expect(search.status).toBe(200);
     expect(search.body).toHaveLength(1);
     expect(search.body[0].musicPreferences).toEqual(['jazz', 'rock']);
     expect(search.body[0]).not.toHaveProperty('email');
-    expect((await request('GET', '/users/search?limit=101')).status).toBe(400);
-    expect((await request('GET', '/users/search?page=0')).status).toBe(400);
+    expect((await request('GET', '/users/search?limit=101', undefined, a.accessToken)).status).toBe(400);
+    expect((await request('GET', '/users/search?page=0', undefined, a.accessToken)).status).toBe(400);
     expect((await request('PATCH', '/users/me', { musicPreferences: { genres: ['jazz'] } }, a.accessToken)).status).toBe(400);
     expect((await request('PATCH', '/users/me', { musicPreferences: ['Jazz', 'jazz'] }, a.accessToken)).status).toBe(400);
     await request('DELETE', `/friends/${b.id}`, undefined, a.accessToken);
@@ -515,8 +517,8 @@ describe('Profile photos', () => {
     expect(saved.body.publicInfo.bio).toBe('Public bio');
     const avatar = saved.body.publicInfo.avatar;
     expect(avatar).toMatch(/^data:image\/jpeg;base64,/);
-    expect((await request('GET', `/users/${a.id}`)).body.publicInfo.avatar).toBe(avatar);
-    expect((await request('GET', `/users/${a.id}`)).body).not.toHaveProperty('privateInfo');
+    expect((await request('GET', `/users/${a.id}`, undefined, b.accessToken)).body.publicInfo.avatar).toBe(avatar);
+    expect((await request('GET', `/users/${a.id}`, undefined, b.accessToken)).body).not.toHaveProperty('privateInfo');
     // A stale normal profile edit must neither overwrite nor inject an unvalidated avatar.
     const edited = await request('PATCH', '/users/me', { publicInfo: { bio: 'Updated', avatar: 'https://untrusted.example/photo' } }, a.accessToken);
     expect(edited.body.publicInfo).toEqual({ bio: 'Updated', avatar });
@@ -539,8 +541,8 @@ describe('Unique usernames and social password setup', () => {
     const claims = await Promise.all([a, b].map(user => request('PATCH', '/users/me', { username: ` ${username.toUpperCase()} ` }, user.accessToken)));
     expect(claims.map(r => r.status).sort()).toEqual([200, 409]);
     const winner = claims[0].status === 200 ? a : b;
-    expect((await request('GET', `/users/${winner.id}`)).body.username).toBe(username);
-    const found = await request('GET', `/users/search?q=@${username}`);
+    expect((await request('GET', `/users/${winner.id}`, undefined, b.accessToken)).body.username).toBe(username);
+    const found = await request('GET', `/users/search?q=@${username}`, undefined, b.accessToken);
     expect(found.body.map((u: { id: string }) => u.id)).toContain(winner.id);
     for (const invalid of ['ab', 'has space', 'a'.repeat(31), 'ééé', 12]) {
       expect((await request('PATCH', '/users/me', { username: invalid }, winner.accessToken)).status).toBe(400);
@@ -625,5 +627,93 @@ describe('PR review regressions', () => {
         expect(html).not.toContain('window.setTimeout');
       }
     }
+  });
+});
+
+
+describe('Profile review regressions', () => {
+  it('rejects blank names and trims valid registration and profile names', async () => {
+    const user = await account();
+    for (const name of ['   ', '\t\n', '\u00a0']) {
+      expect((await request('POST', '/auth/register', { email: `${randomUUID()}@example.com`, password: 'Password-123!', name })).status).toBe(400);
+      expect((await request('PATCH', '/users/me', { name }, user.accessToken)).status).toBe(400);
+    }
+    expect((await request('PATCH', '/users/me', { name: ' Alice ' }, user.accessToken)).body.name).toBe('Alice');
+    const email = `${randomUUID()}@example.com`;
+    expect((await request('POST', '/auth/register', { email, password: 'Password-123!', name: ' Bob ' })).status).toBe(201);
+    expect((await db.user.findUniqueOrThrow({ where: { email } })).name).toBe('Bob');
+  });
+
+  it('rejects large, nested and non-text profile fields before transformation', async () => {
+    const user = await account();
+    let nested: unknown = 'text';
+    for (let i = 0; i < 2000; i++) nested = { child: nested };
+    for (const section of ['publicInfo', 'friendsOnlyInfo', 'privateInfo']) {
+      for (const invalid of [null, [], { bio: 'x'.repeat(90000) }, { bio: nested }, { enabled: true },
+        { bio: ['text'] }, { ['k'.repeat(51)]: 'text' },
+        Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`key${i}`, 'text']))]) {
+        expect((await request('PATCH', '/users/me', { [section]: invalid }, user.accessToken)).status).toBe(400);
+      }
+      const valid = { bio: 'x'.repeat(500), city: 'Paris' };
+      expect((await request('PATCH', '/users/me', { [section]: valid }, user.accessToken)).body[section]).toEqual(valid);
+      expect((await request('PATCH', '/users/me', { [section]: { bio: 'x'.repeat(501) } }, user.accessToken)).status).toBe(400);
+      expect((await request('GET', '/users/me', undefined, user.accessToken)).body[section]).toEqual(valid);
+    }
+  });
+});
+
+
+describe('Review regressions: device installation and literal search', () => {
+  it('upserts one installation per account, updates its model and isolates owners', async () => {
+    const a = await account();
+    const b = await account();
+    const installationId = randomUUID();
+    const payload = { platform: 'ANDROID', model: 'Samsung Galaxy A54', appVersion: '1', installationId };
+    const registrations = await Promise.all(Array.from({ length: 4 }, () => request('POST', '/devices', payload, a.accessToken)));
+    expect(registrations.map(r => r.status)).toEqual([201, 201, 201, 201]);
+    expect(new Set(registrations.map(r => r.body.id)).size).toBe(1);
+    const other = await request('POST', '/devices', payload, b.accessToken);
+    expect(other.body.id).not.toBe(registrations[0].body.id);
+    const returned = await request('POST', '/devices', { ...payload, appVersion: '2' }, a.accessToken);
+    expect(returned.body.id).toBe(registrations[0].body.id);
+    expect(returned.body.appVersion).toBe('2');
+    expect(await db.device.count({ where: { userId: a.id, installationId } })).toBe(1);
+    expect((await request('POST', '/devices', { ...payload, installationId: 'invalid' }, a.accessToken)).status).toBe(400);
+  });
+  it('treats percent, underscore and backslash as literal characters', async () => {
+    const viewer = await account();
+    const marker = randomUUID();
+    for (const symbol of ['%', '_', String.fromCharCode(92)]) {
+      const matching = await account(`${marker}${symbol}literal`);
+      await account(`${marker}Xliteral`);
+      const result = await request('GET', `/users/search?q=${encodeURIComponent(marker + symbol)}`, undefined, viewer.accessToken);
+      expect(result.status).toBe(200);
+      expect(result.body.map((u: { id: string }) => u.id)).toEqual([matching.id]);
+    }
+  });
+});
+
+describe('Discovery friendship actions', () => {
+  it('returns persistent outgoing/incoming/accepted states through cancellation and removal', async () => {
+    const name = `Friend-State-${randomUUID()}`;
+    const a = await account(`Sender-${randomUUID()}`);
+    const b = await account(name);
+    const state = async () => {
+      const result = await request('GET', `/users/search?q=${encodeURIComponent(name)}`, undefined, a.accessToken);
+      expect(result.status).toBe(200);
+      return result.body.find((u: { id: string }) => u.id === b.id);
+    };
+    expect((await state()).relationship).toBe('NONE');
+    const sent = await request('POST', '/friends/requests', { userId: b.id }, a.accessToken);
+    expect(await state()).toMatchObject({ relationship: 'OUTGOING', friendRequestId: sent.body.id });
+    const sender = await request('GET', `/users/search?q=${encodeURIComponent(a.user.name)}`, undefined, b.accessToken);
+    expect(sender.body.find((u: { id: string }) => u.id === a.id)).toMatchObject({ relationship: 'INCOMING', friendRequestId: sent.body.id });
+    expect((await request('DELETE', `/friends/requests/${sent.body.id}`, undefined, a.accessToken)).status).toBe(200);
+    expect(await state()).toMatchObject({ relationship: 'NONE', friendRequestId: null });
+    const again = await request('POST', '/friends/requests', { userId: b.id }, a.accessToken);
+    expect((await request('POST', `/friends/requests/${again.body.id}/accept`, {}, b.accessToken)).status).toBe(201);
+    expect(await state()).toMatchObject({ relationship: 'FRIENDS', friendRequestId: null });
+    expect((await request('DELETE', `/friends/${b.id}`, undefined, a.accessToken)).status).toBe(200);
+    expect((await state()).relationship).toBe('NONE');
   });
 });
