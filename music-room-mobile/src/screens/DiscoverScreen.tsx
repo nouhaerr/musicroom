@@ -49,11 +49,13 @@ export function DiscoverScreen({ client, live }: { client: ApiClient; live: Live
     return () => { active = false; clearTimeout(timer); };
   }, [api, page, query, filter, reload]);
 
-  // The cards follow the phone's clock, so a song turns to "Last played" when its time runs out
+  // The cards follow the phone's clock, so a song turns to "Last played" when its time runs out. Only while the
+  // list is on screen: a room or the Create page drawn in its place must not be drawn again every second.
   useEffect(() => {
+    if (creating || partyId) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [creating, partyId]);
 
   if (creating) return <CreatePartyScreen client={client} onCreated={id => { setCreating(false); setPartyId(id); }} onBack={() => setCreating(false)} />;
   if (partyId) return <PartyScreen client={client} live={live} partyId={partyId} onBack={() => { setPartyId(null); setReload(n => n + 1); }} />;

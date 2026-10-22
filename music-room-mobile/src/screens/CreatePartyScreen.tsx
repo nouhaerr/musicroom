@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
@@ -80,14 +80,15 @@ export function CreatePartyScreen({ client, onCreated, onBack }: {
     finally { if (alive.current) setLocating(false); }
   }
 
-  function picked(value: Date | undefined) {
-    const which = picking;
+  // The picker's answers. The same functions from one drawing of the page to the next: Android's picker opens its
+  // window again whenever it receives new ones, which would put the old value back while the user is choosing.
+  const picked = useCallback((_event: unknown, value: Date) => {
     setPicking(null);
-    if (!value) return;
-    if (which === 'day') setDay(value);
-    else if (which === 'from') setFrom(value);
-    else if (which === 'until') setUntil(value);
-  }
+    if (picking === 'day') setDay(value);
+    else if (picking === 'from') setFrom(value);
+    else if (picking === 'until') setUntil(value);
+  }, [picking]);
+  const dismissed = useCallback(() => setPicking(null), []);
 
   async function create() {
     if (byLocation && new Date(hours.voteEndsAt) <= new Date()) throw new Error('These hours are already over. Choose later hours.');
@@ -151,7 +152,7 @@ export function CreatePartyScreen({ client, onCreated, onBack }: {
       </View>
       {picking ? <DateTimePicker value={picking === 'day' ? day : picking === 'from' ? from : until}
         mode={picking === 'day' ? 'date' : 'time'} minimumDate={picking === 'day' ? new Date() : undefined}
-        onChange={(event, value) => picked(event.type === 'set' ? value : undefined)} /> : null}
+        onValueChange={picked} onDismiss={dismissed} /> : null}
     </View> : null}
 
     {inviting ? <>
