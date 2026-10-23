@@ -73,5 +73,7 @@ export function playlistsApi(client: ApiClient) {
     // instead of overwriting their move
     move: (playlistId: string, entryId: string, position: number, expectedPosition: number) =>
       client.request(`/playlists/${id(playlistId)}/songs/${id(entryId)}`, 'PATCH', { position, expectedPosition }),
+    // Adds a catalog song at the end of the playlist
+    add: (playlistId: string, externalId: string) => client.request(`/playlists/${id(playlistId)}/songs`, 'POST', { externalId }),
   };
 }

@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
-import { faGripVertical, faLock, faMusic, faTrashCan } from '@fortawesome/free-solid-svg-icons';
+import { faGripVertical, faLock, faMusic, faPlus, faTrashCan } from '@fortawesome/free-solid-svg-icons';
 import Sortable, { type SortableGridDragEndParams, type SortableGridRenderItem } from 'react-native-sortables';
 import type { AnimatedRef } from 'react-native-reanimated';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
@@ -13,6 +13,7 @@ import type { GoneReason, Live } from '../realtime/live';
 import { BackLink } from '../components/BackLink';
 import { Button } from '../components/FormControls';
 import { styles } from '../components/ProfileUI';
+import { AddTracksScreen } from './AddTracksScreen';
 
 // Why the page can no longer show the playlist, in words for the user
 const GONE: Record<GoneReason, string> = {
@@ -36,6 +37,7 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
   const [reloadPage, setReloadPage] = useState(0); // counts the reloads of the page data: "Try again", an answer, a refusal
   const [busy, setBusy] = useState(false);
   const [moving, setMoving] = useState(false); // a move is on its way to the server: no other drag until it is answered
+  const [adding, setAdding] = useState(false); // the Add tracks page is open, drawn in place of this one
   const [error, setError] = useState('');
   useAutoDismiss(error, setError);
   useScreenToast(error, ''); // shown at the bottom of the screen: a bin can be far down the list
@@ -150,6 +152,11 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
     </View>;
   }
 
+  if (adding) {
+    return <AddTracksScreen client={client} playlistId={playlistId} name={snapshot.playlist.name} songs={snapshot.songs}
+      onForbidden={() => setReloadPage(n => n + 1)} onBack={() => setAdding(false)} />;
+  }
+
   const { playlist, songs, songsLength } = snapshot;
   const cover = songs[0]?.song.thumbnailUrl;
   const owner = page.owner.id === userId ? 'you' : page.owner.name;
@@ -159,7 +166,13 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
       <Text style={[p.outlineText, main && p.outlineMainText]}>{title}</Text>
     </Pressable>;
   return <View style={styles.section}>
-    <BackLink title="Back to playlists" disabled={busy} onPress={onBack} />
+    <View style={p.top}>
+      <BackLink title="Back to playlists" disabled={busy} onPress={onBack} />
+      {canEdit ? <Pressable accessibilityRole="button" accessibilityLabel="Add tracks" disabled={busy} onPress={() => setAdding(true)}
+        style={({ pressed }) => [p.plus, (busy || pressed) && p.dim]}>
+        <FontAwesomeIcon icon={faPlus} color="#A9B6FF" size={24} />
+      </Pressable> : null}
+    </View>
     <View style={p.header}>
       {cover ? <Image source={{ uri: cover }} style={p.cover} />
         : <View style={[p.cover, p.blank]}><FontAwesomeIcon icon={playlist.visibility === 'PRIVATE' ? faLock : faMusic} color="#A9B6FF" size={28} /></View>}
@@ -205,6 +218,8 @@ const SongRow = memo(function SongRow({ entry, addedBy, canEdit, disabled, onRem
   && before.disabled === after.disabled && before.onRemove === after.onRemove);
 
 const p = StyleSheet.create({
+  top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  plus: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }, // only the +, with a finger-sized area to tap
   header: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   cover: { width: 96, height: 96, borderRadius: 14 },
   blank: { backgroundColor: '#242D3E', alignItems: 'center', justifyContent: 'center' },

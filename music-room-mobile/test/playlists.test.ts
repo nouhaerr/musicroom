@@ -83,3 +83,11 @@ test('a move names the playlist and the song, and sends the place the song had w
   assert.deepEqual([f.calls[1].url.pathname, f.calls[1].init.method, JSON.parse(String(f.calls[1].init.body))],
     ['/playlists/playlist%201/songs/entry%2F2', 'PATCH', { position: 1.5, expectedPosition: 4 }]);
 });
+
+test('adding a song names the playlist and sends the catalog id', async () => {
+  const f = fixture(() => json({}));
+  await f.client.login(user.email, 'password');
+  await playlistsApi(f.client).add('playlist 1', '3135556');
+  assert.deepEqual([f.calls[1].url.pathname, f.calls[1].init.method, JSON.parse(String(f.calls[1].init.body))],
+    ['/playlists/playlist%201/songs', 'POST', { externalId: '3135556' }]);
+});
