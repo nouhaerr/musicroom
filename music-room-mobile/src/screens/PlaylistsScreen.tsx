@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
-import { faChevronRight, faLock, faMusic } from '@fortawesome/free-solid-svg-icons';
+import { faChevronRight, faLock, faMusic, faPlus } from '@fortawesome/free-solid-svg-icons';
 import type { ApiClient } from '../api/client';
 import { PLAYLISTS_PAGE_SIZE, playlistsApi, type Playlist, type PlaylistCard } from '../api/playlists';
 import type { AnimatedRef } from 'react-native-reanimated';
 import type { Live } from '../realtime/live';
 import { Action, styles } from '../components/ProfileUI';
+import { CreatePlaylistScreen } from './CreatePlaylistScreen';
 import { PlaylistScreen } from './PlaylistScreen';
 
 const SEARCH_DELAY_MS = 400; // the search starts once the typing stops for this long
@@ -26,6 +27,7 @@ export function PlaylistsScreen({ client, live, pageScroll }: { client: ApiClien
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0); // counts the reloads asked for: back from a playlist, "Try again"
   const [playlistId, setPlaylistId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const query = text.trim();
 
   // Load a page of playlists. A new search waits for the typing to stop; a late answer is ignored.
@@ -40,6 +42,7 @@ export function PlaylistsScreen({ client, live, pageScroll }: { client: ApiClien
     return () => { active = false; clearTimeout(timer); };
   }, [api, page, query, visibility, reload]);
 
+  if (creating) return <CreatePlaylistScreen client={client} onCreated={id => { setCreating(false); setPlaylistId(id); }} onBack={() => setCreating(false)} />;
   if (playlistId) return <PlaylistScreen client={client} live={live} pageScroll={pageScroll} playlistId={playlistId} onBack={() => { setPlaylistId(null); setReload(n => n + 1); }} />;
 
   const chip = CHIPS.find(each => each.visibility === visibility)!;
@@ -55,9 +58,14 @@ export function PlaylistsScreen({ client, live, pageScroll }: { client: ApiClien
   </Pressable>;
 
   return <View style={styles.section}>
-    <View style={p.heading}>
-      <Text style={p.eyebrow}>YOUR PLAYLISTS</Text>
-      <Text style={p.title}>Made together.</Text>
+    <View style={p.top}>
+      <View style={p.heading}>
+        <Text style={p.eyebrow}>YOUR PLAYLISTS</Text>
+        <Text style={p.title}>Made together.</Text>
+      </View>
+      <Pressable accessibilityRole="button" accessibilityLabel="Create a playlist" onPress={() => setCreating(true)} style={({ pressed }) => [p.plus, pressed && p.dim]}>
+        <FontAwesomeIcon icon={faPlus} color="#A9B6FF" size={24} />
+      </Pressable>
     </View>
     <TextInput accessibilityLabel="Search playlists" placeholder="Search playlists" placeholderTextColor="#737D91" value={text}
       onChangeText={value => { setText(value); setPage(1); }} maxLength={100} autoCorrect={false} autoCapitalize="none" returnKeyType="search" style={styles.input} />
@@ -81,7 +89,10 @@ export function PlaylistsScreen({ client, live, pageScroll }: { client: ApiClien
 }
 
 const p = StyleSheet.create({
-  heading: { gap: 3 },
+  top: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  heading: { flex: 1, gap: 3 },
+  plus: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }, // only the +, with a finger-sized area to tap
+  dim: { opacity: 0.5 },
   grow: { flex: 1, gap: 3 },
   eyebrow: { color: '#A98BFF', fontSize: 13, fontWeight: '700', letterSpacing: 0.5 },
   title: { color: '#F3F3E9', fontSize: 32, fontWeight: '800' },

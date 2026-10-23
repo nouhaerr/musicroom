@@ -36,6 +36,9 @@ export interface PlaylistSnapshot {
   songsLength: number;
 }
 
+// What creating a playlist sends
+export type NewPlaylist = Pick<Playlist, 'name' | 'visibility' | 'editLicense'>;
+
 export const PLAYLISTS_PAGE_SIZE = 20;
 
 // The place of a song dropped at `toIndex` of the new order: halfway between its new neighbours, one step past the
@@ -59,6 +62,9 @@ export function playlistsApi(client: ApiClient) {
       if (!Array.isArray(playlists)) throw new Error('Invalid playlists response.');
       return playlists;
     },
+    create: (playlist: NewPlaylist) => client.request<Playlist>('/playlists', 'POST', playlist),
+    // A pending invitation already lets a friend see a private playlist; to edit one where only invitees edit, they accept it
+    invite: (playlistId: string, userId: string) => client.request(`/playlists/${id(playlistId)}/invite`, 'POST', { userId }),
     // What the page of one playlist needs besides its songs: who owns it, whether I may edit it, my invitation
     page: async (playlistId: string) => {
       const page = await client.request<PlaylistPage>(`/playlists/${id(playlistId)}`);

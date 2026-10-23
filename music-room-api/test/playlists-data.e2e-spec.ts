@@ -333,3 +333,16 @@ describe('One playlist (GET /playlists/:id)', () => {
     expect((await detail(closed, stranger)).status).toBe(403);
   });
 });
+
+describe('Creating a playlist (POST /playlists)', () => {
+  it('trims the name, and refuses one that is empty, only spaces, or longer than 100 characters', async () => {
+    const owner = await account('Owner');
+    const made = await request('POST', '/playlists', { name: '  Night Drive  ' }, owner.token);
+    expect(made.status).toBe(201);
+    expect(made.body).toMatchObject({ name: 'Night Drive', visibility: 'PUBLIC', editLicense: 'EVERYONE' });
+    expect((await request('POST', '/playlists', { name: 'n'.repeat(100) }, owner.token)).status).toBe(201);
+    for (const name of ['', '   ', 'n'.repeat(101)]) {
+      expect((await request('POST', '/playlists', { name }, owner.token)).status).toBe(400);
+    }
+  });
+});

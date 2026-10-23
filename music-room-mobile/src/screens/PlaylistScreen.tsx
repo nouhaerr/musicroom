@@ -12,6 +12,7 @@ import { droppedPosition, playlistsApi, type PlaylistEntry, type PlaylistPage, t
 import type { GoneReason, Live } from '../realtime/live';
 import { BackLink } from '../components/BackLink';
 import { Button } from '../components/FormControls';
+import { OutlineButton } from '../components/OutlineButton';
 import { styles } from '../components/ProfileUI';
 import { AddTracksScreen } from './AddTracksScreen';
 
@@ -160,11 +161,6 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
   const { playlist, songs, songsLength } = snapshot;
   const cover = songs[0]?.song.thumbnailUrl;
   const owner = page.owner.id === userId ? 'you' : page.owner.name;
-  // A light button: only a border on the page background, blue for the main choice
-  const outline = (title: string, onPress: () => void, main: boolean) =>
-    <Pressable accessibilityRole="button" disabled={busy} onPress={onPress} style={({ pressed }) => [p.outline, main && p.outlineMain, (busy || pressed) && p.dim]}>
-      <Text style={[p.outlineText, main && p.outlineMainText]}>{title}</Text>
-    </Pressable>;
   return <View style={styles.section}>
     <View style={p.top}>
       <BackLink title="Back to playlists" disabled={busy} onPress={onBack} />
@@ -185,7 +181,10 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
     {page.invitation?.status === 'PENDING' ? <View style={p.invite}>
       <Text style={p.eyebrow}>INVITATION</Text>
       <Text style={p.inviteText}>You're invited to this playlist.</Text>
-      <View style={p.row}>{outline('Accept', () => answer(true), true)}{outline('Decline', () => answer(false), false)}</View>
+      <View style={p.row}>
+        <View style={p.grow}><OutlineButton title="Accept" main disabled={busy} onPress={() => answer(true)} /></View>
+        <View style={p.grow}><OutlineButton title="Decline" disabled={busy} onPress={() => answer(false)} /></View>
+      </View>
     </View> : null}
 
     <Text style={p.heading}>The tracklist</Text>
@@ -230,10 +229,6 @@ const p = StyleSheet.create({
   eyebrow: { color: '#A98BFF', fontSize: 13, fontWeight: '700', letterSpacing: 0.5 },
   inviteText: { color: '#F3F3E9', fontSize: 15, fontWeight: '600' },
   row: { flexDirection: 'row', gap: 12 },
-  outline: { flex: 1, minHeight: 48, borderRadius: 13, borderWidth: 1, borderColor: '#3B4355', alignItems: 'center', justifyContent: 'center' },
-  outlineMain: { borderColor: '#AEB5FF' },
-  outlineText: { color: '#B4BDCE', fontSize: 15, fontWeight: '700' },
-  outlineMainText: { color: '#A9B6FF' },
   heading: { color: '#F3F3E9', fontSize: 20, fontWeight: '700' },
   entry: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomColor: '#3B4355', borderBottomWidth: 1 },
   handle: { width: 28, height: 44, alignItems: 'center', justifyContent: 'center' },

@@ -91,3 +91,15 @@ test('adding a song names the playlist and sends the catalog id', async () => {
   assert.deepEqual([f.calls[1].url.pathname, f.calls[1].init.method, JSON.parse(String(f.calls[1].init.body))],
     ['/playlists/playlist%201/songs', 'POST', { externalId: '3135556' }]);
 });
+
+test('creating a playlist sends its name and rules, and inviting names the playlist and the friend', async () => {
+  const f = fixture(() => json({ id: 'playlist 1' }));
+  await f.client.login(user.email, 'password');
+  const api = playlistsApi(f.client);
+  await api.create({ name: 'Night Drive', visibility: 'PRIVATE', editLicense: 'INVITED_ONLY' });
+  await api.invite('playlist 1', 'user/2');
+  assert.deepEqual(f.calls.slice(1).map(c => [c.url.pathname, c.init.method, JSON.parse(String(c.init.body))]), [
+    ['/playlists', 'POST', { name: 'Night Drive', visibility: 'PRIVATE', editLicense: 'INVITED_ONLY' }],
+    ['/playlists/playlist%201/invite', 'POST', { userId: 'user/2' }],
+  ]);
+});
