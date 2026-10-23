@@ -464,6 +464,7 @@ type Snapshot = {
   party: { id: string; playbackVersion: number; nowPlaying: { id: string } | null };
   queue: { id: string; songId: string; voteCount: number }[];
   queueLength: number;
+  playingForMs: number | null;
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -573,6 +574,36 @@ function loggedErrors() {
 }
 
 describe('Party snapshots: what watchers receive', () => {
+  it('tells how long the current song has been playing, measured by the server', async () => {
+    const owner = await account();
+    const { id } = await partyWithSongs(owner.accessToken, 1);
+    const watching = await watcher(owner.accessToken, id);
+    expect(watching.last().playingForMs).toBeNull(); // nothing is playing yet
+
+    expect((await next(id, owner.accessToken, 0)).status).toBe(201);
+    await until(() => watching.received.length === 2);
+    const first = watching.last().playingForMs as number;
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(first).toBeLessThan(2000);
+
+    // A later snapshot of the same song: that much more time has passed
+    await sleep(600);
+    expect((await suggest(id, track(), owner.accessToken)).status).toBe(201);
+    await until(() => watching.received.length === 3);
+    const later = watching.last().playingForMs as number;
+    expect(later).toBeGreaterThanOrEqual(first + 500);
+    expect(later).toBeLessThan(first + 3000);
+
+    // The suggested song starts: the count starts again. Then playback stops: there is nothing to count.
+    expect((await next(id, owner.accessToken, 1)).status).toBe(201);
+    await until(() => watching.received.length === 4);
+    expect(watching.last().playingForMs as number).toBeLessThan(later);
+    expect((await next(id, owner.accessToken, 2)).status).toBe(201);
+    await until(() => watching.received.length === 5);
+    expect(watching.last().party.nowPlaying).toBeNull();
+    expect(watching.last().playingForMs).toBeNull();
+  });
+
   it('sends the current snapshot on subscribing: the same data as GET /parties/:id and GET /queue', async () => {
     const owner = await account();
     const { id, entries } = await partyWithSongs(owner.accessToken, 2);
@@ -1374,9 +1405,10 @@ async function playlistWatcher(token: string, id: string) {
   return { socket, received, last: () => received[received.length - 1] };
 }
 
-// What the REST routes show for a playlist right now: a snapshot must hold exactly this
+// What the REST routes show for a playlist right now: a snapshot must hold exactly this, apart from
+// what GET /playlists/:id adds for the page (its owner, and canEdit and invitation for this user only)
 async function playlistRestView(id: string, token: string) {
-  const playlist = (await request('GET', `/playlists/${id}`, undefined, token)).body;
+  const { owner, canEdit, invitation, ...playlist } = (await request('GET', `/playlists/${id}`, undefined, token)).body;
   const songs = (await request('GET', `/playlists/${id}/songs?limit=100`, undefined, token)).body;
   return { playlist, songs };
 }

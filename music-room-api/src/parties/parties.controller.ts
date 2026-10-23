@@ -3,6 +3,7 @@ import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@n
 import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { PartiesService } from './parties.service';
 import { CreatePartyDto } from './dto/create-party.dto';
+import { ListPartiesDto } from './dto/list-parties.dto';
 import { InviteUserDto, NextTrackDto, SuggestSongDto, VoteDto } from './dto/party-actions.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -21,7 +22,7 @@ export class PartiesController {
   }
 
   @Get()
-  findPublic(@CurrentUser() user: PublicUser, @Query() query: PaginationDto) {
+  findPublic(@CurrentUser() user: PublicUser, @Query() query: ListPartiesDto) {
     return this.partiesService.findPublic(user.id, query);
   }
 

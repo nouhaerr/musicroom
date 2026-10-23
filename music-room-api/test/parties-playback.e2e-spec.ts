@@ -330,3 +330,43 @@ describe('Party playback: votes arriving while the track changes', () => {
     expect(await queue(id, owner)).toHaveLength(1);
   });
 });
+
+describe('A party queue holds at most 100 songs', () => {
+  // The whole queue: GET /queue gives 20 entries unless asked for its largest page
+  const fullQueue = async (id: string, token: string): Promise<QueueEntry[]> =>
+    (await request('GET', `/parties/${id}/queue?limit=100`, undefined, token)).body;
+
+  // A party whose queue holds `count` songs, with catalog ids from `first` on
+  async function partyWithQueue(count: number, first: number) {
+    const owner = await account('Owner');
+    const party = await request('POST', '/parties', { name: 'Full queue test' }, owner);
+    expect(party.status).toBe(201);
+    for (let n = 0; n < count; n++) expect((await suggest(party.body.id, String(first + n), owner)).status).toBe(201);
+    return { owner, id: party.body.id as string };
+  }
+
+  it('accepts the 100th song, refuses the 101st, and makes room again when a song plays', async () => {
+    const { owner, id } = await partyWithQueue(99, 50000);
+
+    expect((await suggest(id, '50099', owner)).status).toBe(201);
+    const refused = await suggest(id, '50100', owner);
+    expect(refused.status).toBe(409);
+    expect(refused.body.message).toBe('The queue is full (100 songs). Vote for a song already in it.');
+    expect(await fullQueue(id, owner)).toHaveLength(100);
+
+    expect((await next(id, owner, (await detail(id, owner)).playbackVersion)).status).toBe(201);
+    expect((await suggest(id, '50100', owner)).status).toBe(201);
+    expect(await fullQueue(id, owner)).toHaveLength(100);
+  });
+
+  it('lets only one of two simultaneous suggestions take the last place', async () => {
+    const { owner, id } = await partyWithQueue(99, 51000);
+
+    // Each insertion is slowed down: without the lock, both suggestions would count 99 songs and both be added
+    await withSlowTrigger('PartySong', 'BEFORE INSERT', async () => {
+      const answers = await Promise.all([suggest(id, '51099', owner), suggest(id, '51100', owner)]);
+      expect(answers.map((answer) => answer.status).sort()).toEqual([201, 409]);
+    });
+    expect(await fullQueue(id, owner)).toHaveLength(100);
+  });
+});

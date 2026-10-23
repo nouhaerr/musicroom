@@ -1,0 +1,138 @@
+import type { ApiClient } from './client.ts';
+
+// What the server sends for a party. The screens of the design call it a "room".
+
+export interface Song {
+  id: string;
+  externalId: string | null;
+  title: string;
+  artist: string;
+  durationSec: number;
+  sourceUri: string;
+  thumbnailUrl: string | null;
+}
+
+export interface Party {
+  id: string;
+  ownerId: string;
+  name: string;
+  visibility: 'PUBLIC' | 'PRIVATE';
+  voteLicense: 'EVERYONE' | 'INVITED_ONLY' | 'LOCATION_TIME';
+  voteStartsAt: string | null;
+  voteEndsAt: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  radiusMeters: number | null;
+  nowPlaying: Song | null;
+  nowPlayingStartedAt: string | null;
+  playbackVersion: number;
+}
+
+export interface QueueEntry {
+  id: string; // the partySongId: what a vote names
+  voteCount: number;
+  song: Song;
+}
+
+// Where a phone is, for a party that counts votes at its location
+export interface Position { latitude: number; longitude: number }
+
+// A party as the room lists give it: with who hosts it, and how long its song has been playing when the server answered
+export type PartyCard = Party & { owner: { id: string; name: string }; playingForMs: number | null };
+
+// The chips of the Discover page, and what each asks the server
+export type RoomFilter = 'public' | 'private' | 'location';
+const ROOM_FILTERS: Record<RoomFilter, string> = {
+  public: 'visibility=PUBLIC',
+  private: 'visibility=PRIVATE',
+  location: 'voteLicense=LOCATION_TIME',
+};
+
+// What creating a party sends. The place and the hours only for a place-and-time party.
+export interface NewParty {
+  name: string;
+  visibility: Party['visibility'];
+  voteLicense: Party['voteLicense'];
+  latitude?: number;
+  longitude?: number;
+  radiusMeters?: number;
+  voteStartsAt?: string;
+  voteEndsAt?: string;
+}
+
+// One realtime message: the whole party, as GET /parties/:id and GET /parties/:id/queue return it
+export interface PartySnapshot {
+  party: Party;
+  queue: QueueEntry[]; // the whole queue: the server keeps it at MAX_PARTY_SONGS songs at most (100 by default)
+  queueLength: number; // how many songs are in the queue
+  playingForMs: number | null; // how long the song has been playing when the server sent this; null if none is
+}
+
+const VOTES_PAGE_SIZE = 100; // the largest page the server gives
+export const ROOMS_PAGE_SIZE = 20;
+
+// The calls of the party page
+export function partiesApi(client: ApiClient) {
+  const id = encodeURIComponent;
+  const vote = (partyId: string, entryId: string) => `/parties/${id(partyId)}/songs/${id(entryId)}/vote`;
+  return {
+    // A page of the rooms of one chip, newest first; with a search, only those whose name contains it
+    list: async (page: number, search: string, filter: RoomFilter) => {
+      const rooms = await client.request<PartyCard[]>(`/parties?page=${page}&limit=${ROOMS_PAGE_SIZE}&${ROOM_FILTERS[filter]}${search ? `&q=${id(search)}` : ''}`);
+      if (!Array.isArray(rooms)) throw new Error('Invalid rooms response.');
+      return rooms;
+    },
+    create: (party: NewParty) => client.request<Party>('/parties', 'POST', party),
+    // A pending invitation is enough to see a private party, and to vote in an "invited only" one
+    invite: (partyId: string, userId: string) => client.request(`/parties/${id(partyId)}/invite`, 'POST', { userId }),
+    // The queue entries I voted for in this party: what the page marks as "You voted"
+    myVotes: async (partyId: string) => {
+      const voted = new Set<string>();
+      for (let page = 1; ; page++) {
+        const ids = await client.request<string[]>(`/parties/${id(partyId)}/votes/mine?page=${page}&limit=${VOTES_PAGE_SIZE}`);
+        if (!Array.isArray(ids) || !ids.every(entryId => typeof entryId === 'string')) throw new Error('Invalid votes response.');
+        for (const entryId of ids) voted.add(entryId);
+        if (ids.length < VOTES_PAGE_SIZE) return voted;
+      }
+    },
+    // Adds a catalog song at the end of the queue, with no votes yet
+    suggest: (partyId: string, externalId: string) => client.request(`/parties/${id(partyId)}/songs`, 'POST', { externalId }),
+    // The position is only for a party that counts votes at its location (voteLicense LOCATION_TIME)
+    vote: (partyId: string, entryId: string, position?: Position) => client.request(vote(partyId, entryId), 'POST', position ?? {}),
+    unvote: (partyId: string, entryId: string) => client.request(vote(partyId, entryId), 'DELETE'),
+    // The host moves to the next song. The version is the one last seen: the server refuses an older one.
+    next: (partyId: string, expectedPlaybackVersion: number) =>
+      client.request(`/parties/${id(partyId)}/next`, 'POST', { expectedPlaybackVersion }),
+  };
+}
+
+// How long a song counts for in the app: the room's progress bar and the playlist's lengths both use it.
+// EXPO_PUBLIC_SONG_SECONDS (in .env) makes every song count for at most that many seconds; empty, each keeps its real length.
+export function songSeconds(durationSec: number) {
+  const cap = Number(process.env.EXPO_PUBLIC_SONG_SECONDS);
+  return cap > 0 ? Math.min(durationSec, cap) : durationSec;
+}
+
+// How far the song playing is: what the server measured, plus the time since this phone received it.
+// The phone's clock is never compared with the server's. Never outside the song.
+export function progress(snapshot: { party: Pick<Party, 'nowPlaying'>; playingForMs: number | null }, receivedAt: number, now: number) {
+  const { nowPlaying } = snapshot.party;
+  if (!nowPlaying || typeof snapshot.playingForMs !== 'number') return null;
+  const durationSec = songSeconds(nowPlaying.durationSec);
+  const elapsedSec = Math.min(Math.max(Math.floor((snapshot.playingForMs + now - receivedAt) / 1000), 0), durationSec);
+  return { elapsedSec, durationSec };
+}
+
+// The voting hours of a place-and-time party: the day, with the hours and minutes of "from" and "until".
+// "Until" not after "from" means the next day, like a party from 8 PM to 1 AM.
+export function votingWindow(day: Date, from: Date, until: Date) {
+  const start = new Date(day);
+  start.setHours(from.getHours(), from.getMinutes(), 0, 0);
+  const end = new Date(day);
+  end.setHours(until.getHours(), until.getMinutes(), 0, 0);
+  if (end <= start) end.setDate(end.getDate() + 1);
+  return { voteStartsAt: start.toISOString(), voteEndsAt: end.toISOString() };
+}
+
+// 65 seconds are shown as 1:05
+export const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
