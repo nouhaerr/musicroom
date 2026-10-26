@@ -7,7 +7,7 @@ import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import type { ApiClient } from '../api/client';
 import { partiesApi, votingWindow, type Party, type Position } from '../api/parties';
-import { currentPosition, recentPosition } from '../location';
+import { currentPosition } from '../location';
 import { Button, Field } from '../components/FormControls';
 import { FriendPicker } from '../components/FriendPicker';
 import { VenueMap } from '../components/VenueMap';
@@ -58,8 +58,6 @@ export function CreatePartyScreen({ client, onCreated, onBack }: {
   // Quietly: if the position cannot be read, the user taps the map instead.
   useEffect(() => {
     if (!byLocation) return;
-    const recent = recentPosition();
-    if (recent) { setPin(current => current ?? recent); return; }
     let active = true;
     void locate().then(found => { if (active) setPin(current => current ?? found); }).catch(() => {});
     return () => { active = false; };
