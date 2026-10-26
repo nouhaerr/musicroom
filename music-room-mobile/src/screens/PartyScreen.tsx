@@ -6,7 +6,7 @@ import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { ApiError, type ApiClient } from '../api/client';
 import { clock, partiesApi, progress, type PartySnapshot, type QueueEntry } from '../api/parties';
 import type { GoneReason, Live } from '../realtime/live';
-import { currentPosition, recentPosition } from '../location';
+import { currentPosition } from '../location';
 import { Button } from '../components/FormControls';
 import { styles } from '../components/ProfileUI';
 import { SuggestScreen } from './SuggestScreen';
@@ -21,7 +21,6 @@ const GONE: Record<GoneReason, string> = {
   BAD_REQUEST: 'Live updates are unavailable for this party.',
   TOO_MANY: 'Too many pages are open at once.',
 };
-const REFRESH_MS = 60_000; // in a party that counts votes by location, how often the page reads the position again
 
 export function PartyScreen({ client, live, partyId, onBack }: {
   client: ApiClient; live: Live; partyId: string; onBack: () => void;
@@ -36,7 +35,7 @@ export function PartyScreen({ client, live, partyId, onBack }: {
   const [receivedAt, setReceivedAt] = useState(0); // when the last snapshot arrived, on this phone's clock
   const [now, setNow] = useState(Date.now());
   const [suggesting, setSuggesting] = useState(false); // the Suggest page is open, drawn in place of this one
-  const [locating, setLocating] = useState<string | null>(null); // who waits for a position reading: the party (page just opened) or the song being voted
+  const [locating, setLocating] = useState<string | null>(null); // the song whose vote waits for a position reading
   useAutoDismiss(error, setError);
   const alive = useRef(false);
   const working = useRef(false);
@@ -67,17 +66,6 @@ export function PartyScreen({ client, live, partyId, onBack }: {
     return () => { active = false; };
   }, [api, partyId]);
 
-  // In a party that counts votes by location, read the position when the page opens and then every minute,
-  // so that a vote finds a recent one and sends it at once
-  useEffect(() => {
-    if (!byLocation) return;
-    const quietly = () => void currentPosition(true).catch(() => {}); // asks nothing: if it fails, the vote reads and tells
-    if (recentPosition()) quietly();
-    else void locate(partyId).catch(e => { if (alive.current) setError(e instanceof Error ? e.message : 'Unable to read your position.'); });
-    const timer = setInterval(quietly, REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [byLocation, partyId]);
-
   // The progress bar follows the phone's clock
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -102,7 +90,7 @@ export function PartyScreen({ client, live, partyId, onBack }: {
     void action(async () => {
       try {
         if (had) await api.unvote(partyId, entry.id);
-        else await api.vote(partyId, entry.id, byLocation ? recentPosition() ?? await locate(entry.id) : undefined);
+        else await api.vote(partyId, entry.id, byLocation ? await locate(entry.id) : undefined);
       } catch (e) {
         // The server is already where we wanted to go (voted from another device, or the vote is gone): only the mark was wrong
         if (!(e instanceof ApiError && e.status === (had ? 404 : 409))) throw e;
