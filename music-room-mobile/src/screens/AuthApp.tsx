@@ -419,7 +419,7 @@ function Sonora() {
               }} /> : area === 'people' ?
               <PeopleScreen key={user.id} client={client!} userId={user.id} onBusy={setAreaBusy} onBack={() => setArea('profile')} /> : area === 'devices' ?
               <DevicesScreen key={user.id} client={client!} onBusy={setAreaBusy} /> :
-              <AccountListScreen key={area} client={client!} area={area} />}
+              <AccountListScreen key={area} client={client!} area={area} onBusy={setAreaBusy} />}
           </> : <>
             {screen === 'settings' ? <>
               <Text style={s.muted}>On a phone, enter your computer’s IP address on the same Wi-Fi. Changing the server signs you out.</Text>
