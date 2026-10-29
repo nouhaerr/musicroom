@@ -1,3 +1,4 @@
+import { normalizeEmail } from '../common/email';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { SessionsService, tokenHash } from './sessions.service';
@@ -46,7 +47,7 @@ export class AuthService {
   async register(email: string, password: string, name: string): Promise<PublicUser> {
     const existing = await this.usersService.findByEmail(email);
     if (existing) {
-      throw new ConflictException('Un compte existe déjà avec cet email');
+      throw new ConflictException('An account already exists with this email');
     }
 
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
@@ -86,17 +87,17 @@ export class AuthService {
   async validateUserCredentials(email: string, password: string): Promise<PublicUser> {
     const user = await this.usersService.findByEmail(email);
     if (!user || !user.passwordHash) {
-      throw new UnauthorizedException('Email ou mot de passe invalide');
+      throw new UnauthorizedException('Invalid email or password');
     }
 
     const passwordMatches = await bcrypt.compare(password, user.passwordHash);
     if (!passwordMatches) {
-      throw new UnauthorizedException('Email ou mot de passe invalide');
+      throw new UnauthorizedException('Invalid email or password');
     }
 
     if (!user.emailVerifiedAt) {
       throw new ForbiddenException(
-        "Email non vérifié : consultez votre boîte mail pour valider votre compte",
+        "Email not verified. Check your inbox to verify your account.",
       );
     }
 
@@ -135,17 +136,31 @@ export class AuthService {
     // Réponse générique quoi qu'il arrive côté contrôleur (anti-énumération)
   }
 
+  async requestPasswordSetup(userId: string): Promise<void> {
+    const user = await this.usersService.findById(userId);
+    if (!user) throw new UnauthorizedException('Account not found');
+    if (user.passwordHash) throw new ConflictException('A password is already set. Request a reset link using forgot-password.');
+    const token = this.signPurposeToken(user, 'password-reset', '30m');
+    const { exp } = this.jwtService.decode<{ exp: number }>(token);
+    await this.prisma.passwordResetToken.create({ data: {
+      userId, tokenHash: tokenHash(token), expiresAt: new Date(exp * 1000),
+    } });
+    await this.mailService.sendPasswordResetEmail(user.email, token, true);
+  }
+
   async resetPassword(token: string, newPassword: string): Promise<void> {
     const payload = this.verifyPurposeToken(token, 'password-reset');
     const passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
     await this.prisma.$transaction(async tx => {
       await lockUsers(tx, [payload.sub]);
+      const user = await tx.user.findUnique({ where: { id: payload.sub } });
+      if (!user || normalizeEmail(user.email) !== normalizeEmail(payload.email ?? '')) throw new UnauthorizedException('This link is no longer valid');
       const consumed = await tx.passwordResetToken.updateMany({
         where: { userId: payload.sub, tokenHash: tokenHash(token), usedAt: null, expiresAt: { gt: new Date() } },
         data: { usedAt: new Date() },
       });
-      if (consumed.count !== 1) throw new UnauthorizedException('Lien expiré ou déjà utilisé');
-      await tx.user.update({ where: { id: payload.sub }, data: { passwordHash } });
+      if (consumed.count !== 1) throw new UnauthorizedException('This link has expired or has already been used');
+      await tx.user.update({ where: { id: payload.sub }, data: { passwordHash, emailVerifiedAt: user.emailVerifiedAt ?? new Date() } });
       await tx.passwordResetToken.updateMany({ where: { userId: payload.sub, usedAt: null }, data: { usedAt: new Date() } });
       await this.sessions.revokeAll(tx, payload.sub);
     });
@@ -154,14 +169,14 @@ export class AuthService {
   // ---------------------------------------------------------------------
   // OAuth Facebook / Google (token vérifié, envoyé par le SDK mobile)
   // ---------------------------------------------------------------------
-  async loginWithFacebook(accessToken: string): Promise<AuthTokens & { user: PublicUser }> {
-    const profile = await this.facebookProvider.verify(accessToken);
+  async loginWithFacebook(accessToken: string, nonce?: string): Promise<AuthTokens & { user: PublicUser }> {
+    const profile = await this.facebookProvider.verify(accessToken, nonce);
     let user = await this.usersService.findByFacebookId(profile.providerId);
 
     if (!user) {
       user = await this.usersService.findByEmail(profile.email);
       if (user) {
-        throw new ConflictException('Connectez-vous au compte existant puis liez le compte social explicitement');
+        throw new ConflictException('Log in to the existing account, then explicitly link your social account');
       } else {
         user = await this.usersService.createFromSocial({
           email: profile.email,
@@ -182,7 +197,7 @@ export class AuthService {
     if (!user) {
       user = await this.usersService.findByEmail(profile.email);
       if (user) {
-        throw new ConflictException('Connectez-vous au compte existant puis liez le compte social explicitement');
+        throw new ConflictException('Log in to the existing account, then explicitly link your social account');
       } else {
         user = await this.usersService.createFromSocial({
           email: profile.email,
@@ -198,11 +213,11 @@ export class AuthService {
 
   // Lier un compte réseau social à un compte déjà authentifié (V.1 : "the
   // application must allow them to link their network account")
-  async linkFacebook(userId: string, accessToken: string): Promise<PublicUser> {
-    const profile = await this.facebookProvider.verify(accessToken);
+  async linkFacebook(userId: string, accessToken: string, nonce?: string): Promise<PublicUser> {
+    const profile = await this.facebookProvider.verify(accessToken, nonce);
     const owner = await this.usersService.findByFacebookId(profile.providerId);
     if (owner && owner.id !== userId) {
-      throw new ConflictException('Ce compte Facebook est déjà lié à un autre utilisateur');
+      throw new ConflictException('This Facebook account is already linked to another user');
     }
     const user = await this.usersService.linkFacebookAccount(userId, profile.providerId);
     return toPublicUser(user);
@@ -212,15 +227,27 @@ export class AuthService {
     const profile = await this.googleProvider.verify(idToken);
     const owner = await this.usersService.findByGoogleId(profile.providerId);
     if (owner && owner.id !== userId) {
-      throw new ConflictException('Ce compte Google est déjà lié à un autre utilisateur');
+      throw new ConflictException('This Google account is already linked to another user');
     }
     const user = await this.usersService.linkGoogleAccount(userId, profile.providerId);
     return toPublicUser(user);
   }
 
-  // ---------------------------------------------------------------------
-  // Helpers JWT
-  // ---------------------------------------------------------------------
+  // Lock the user so concurrent removals cannot remove both remaining providers.
+  async unlinkSocial(userId: string, provider: 'google' | 'facebook'): Promise<PublicUser> {
+    return this.prisma.$transaction(async tx => {
+      await lockUsers(tx, [userId]);
+      const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
+      const field = provider === 'google' ? 'googleId' : 'facebookId';
+      if (!user[field]) return toPublicUser(user);
+      const other = provider === 'google' ? user.facebookId : user.googleId;
+      if (!other && !(user.passwordHash && user.emailVerifiedAt)) {
+        throw new ConflictException('Link another sign-in method before unlinking this account.');
+      }
+      return toPublicUser(await tx.user.update({ where: { id: userId }, data: { [field]: null } }));
+    });
+  }
+
   private signPurposeToken(user: User, type: TokenType, expiresIn: JwtSignOptions['expiresIn']): string {
     const secret =
       type === 'refresh'
@@ -243,11 +270,11 @@ export class AuthService {
     try {
       payload = this.jwtService.verify<JwtPayload>(token, { secret, algorithms: ['HS256'] });
     } catch {
-      throw new UnauthorizedException('Token invalide ou expiré');
+      throw new UnauthorizedException('Invalid or expired token');
     }
 
     if (payload.type !== expectedType || typeof payload.sub !== 'string' || !payload.sub) {
-      throw new UnauthorizedException('Type de token invalide');
+      throw new UnauthorizedException('Invalid token type');
     }
     return payload;
   }

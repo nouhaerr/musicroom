@@ -1,3 +1,6 @@
+import { normalizeEmail } from '../common/email';
+import { normalizeAvatar } from './avatar';
+import { lockUsers } from '../common/locks';
 import { publicProfileSelect, toPublicUser } from './user.mapper';
 import { SearchUsersDto } from './dto/search-users.dto';
 import { paginate } from '../common/pagination.dto';
@@ -15,7 +18,7 @@ export class UsersService {
   }
 
   findByEmail(email: string) {
-    return this.prisma.user.findUnique({ where: { email } });
+    return this.prisma.user.findUnique({ where: { email: normalizeEmail(email) } });
   }
 
   findByFacebookId(facebookId: string) {
@@ -29,7 +32,7 @@ export class UsersService {
   createWithPassword(data: { email: string; name: string; passwordHash: string }) {
     return this.withUniqueConflict(() => this.prisma.user.create({
       data: {
-        email: data.email,
+        email: normalizeEmail(data.email),
         name: data.name,
         passwordHash: data.passwordHash,
         authProvider: AuthProvider.EMAIL,
@@ -46,7 +49,7 @@ export class UsersService {
   }) {
     return this.withUniqueConflict(() => this.prisma.user.create({
       data: {
-        email: data.email,
+        email: normalizeEmail(data.email),
         name: data.name,
         authProvider: data.provider,
         facebookId: data.facebookId,
@@ -76,27 +79,41 @@ export class UsersService {
     return this.prisma.user.update({ where: { id: userId }, data: { passwordHash } });
   }
 
-  search(query: SearchUsersDto) {
-    return this.prisma.user.findMany({
+  async search(query: SearchUsersDto, viewerId: string) {
+    const escape = (text: string) => text.replace(/[\\%_]/g, character => `\\${character}`);
+    const users = await this.prisma.user.findMany({
       where: {
-        ...(query.q ? { name: { contains: query.q.trim(), mode: 'insensitive' } } : {}),
+        ...(query.q ? { OR: [{ name: { contains: escape(query.q.trim()), mode: 'insensitive' as const } }, { username: { contains: escape(query.q.trim().replace(/^@/, '')), mode: 'insensitive' as const } }] } : {}),
         ...(query.genre ? { musicPreferences: { has: query.genre } } : {}),
       },
-      select: publicProfileSelect,
+      select: { ...publicProfileSelect, friends: { where: { id: viewerId }, select: { id: true } } },
       orderBy: [{ name: 'asc' }, { id: 'asc' }],
       ...paginate(query),
+    });
+    const ids = users.map(user => user.id);
+    const pending = await this.prisma.friendRequest.findMany({ where: {
+      status: 'PENDING', OR: [
+        { senderId: viewerId, receiverId: { in: ids } },
+        { receiverId: viewerId, senderId: { in: ids } },
+      ],
+    }, select: { id: true, senderId: true, receiverId: true } });
+    return users.map(({ friends, ...user }) => {
+      const request = pending.find(item => item.senderId === user.id || item.receiverId === user.id);
+      return { ...user, relationship: friends.length ? 'FRIENDS' : request
+        ? request.senderId === viewerId ? 'OUTGOING' : 'INCOMING' : 'NONE',
+        friendRequestId: friends.length ? null : request?.id ?? null };
     });
   }
 
   async getProfile(id: string, viewerId?: string) {
     const user = await this.prisma.user.findUnique({ where: { id } });
-    if (!user) throw new NotFoundException('Utilisateur introuvable');
+    if (!user) throw new NotFoundException('User not found');
     if (id === viewerId) return toPublicUser(user);
     const friend = viewerId ? await this.prisma.user.findFirst({
       where: { id, friends: { some: { id: viewerId } } }, select: { id: true },
     }) : null;
     return {
-      id: user.id, name: user.name, publicInfo: user.publicInfo,
+      id: user.id, name: user.name, username: user.username, publicInfo: user.publicInfo,
       musicPreferences: user.musicPreferences,
       ...(friend ? { friendsOnlyInfo: user.friendsOnlyInfo } : {}),
     };
@@ -111,7 +128,32 @@ export class UsersService {
       musicPreferences: dto.musicPreferences,
     };
 
-    return this.prisma.user.update({ where: { id: userId }, data });
+    return this.withUniqueConflict(() => this.prisma.$transaction(async tx => {
+      await lockUsers(tx, [userId]);
+      if (dto.publicInfo) {
+        const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
+        const existing = user.publicInfo as Record<string, Prisma.InputJsonValue> | null;
+        // Avatar mutations use the dedicated validation route, including removals.
+        const info = { ...dto.publicInfo };
+        delete info.avatar;
+        delete info.username;
+        if (existing?.avatar) info.avatar = existing.avatar;
+        data.publicInfo = info as Prisma.InputJsonValue;
+      }
+      return tx.user.update({ where: { id: userId }, data });
+    }));
+  }
+
+  async setAvatar(userId: string, input: string | null) {
+    const avatar = input === null ? null : await normalizeAvatar(input);
+    return this.prisma.$transaction(async tx => {
+      await lockUsers(tx, [userId]);
+      const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
+      const publicInfo = { ...(user.publicInfo as Record<string, Prisma.InputJsonValue> | null) };
+      if (avatar === null) delete publicInfo.avatar;
+      else publicInfo.avatar = avatar;
+      return tx.user.update({ where: { id: userId }, data: { publicInfo } });
+    });
   }
 
   private async withUniqueConflict<T>(operation: () => Promise<T>): Promise<T> {
@@ -119,7 +161,10 @@ export class UsersService {
       return await operation();
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        throw new ConflictException('Cet email ou compte social est déjà utilisé');
+        if (Array.isArray(error.meta?.target) && error.meta.target.includes('username')) {
+          throw new ConflictException('This username is already taken. Choose another one.');
+        }
+        throw new ConflictException('This email or social account is already in use');
       }
       throw error;
     }

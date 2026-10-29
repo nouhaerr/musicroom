@@ -40,7 +40,7 @@ export class SessionsService {
       await lockUsers(tx, [userId]);
       const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
       if (credentialsCheckedAt && user.updatedAt.getTime() !== credentialsCheckedAt.getTime()) {
-        throw new UnauthorizedException('Compte modifié pendant la connexion, veuillez réessayer');
+        throw new UnauthorizedException('Account changed during login. Please try again');
       }
       const sid = randomUUID();
       const { expiresAt, ...tokens } = this.tokens(user.id, user.email, sid);
@@ -59,9 +59,9 @@ export class SessionsService {
         secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
         algorithms: ['HS256'],
       });
-    } catch { throw new UnauthorizedException('Token invalide ou expiré'); }
+    } catch { throw new UnauthorizedException('Invalid or expired token'); }
     if (payload.type !== 'refresh' || !payload.sid || !payload.sub || !payload.jti) {
-      throw new UnauthorizedException('Type de token invalide');
+      throw new UnauthorizedException('Invalid token type');
     }
 
     const result = await this.prisma.$transaction(async tx => {
@@ -83,7 +83,7 @@ export class SessionsService {
       await tx.authSession.update({ where: { id: record.sessionId }, data: { expiresAt } });
       return { ...tokens, user: toPublicUser(record.session.user) };
     });
-    if (!result) throw new UnauthorizedException('Session invalide ou token déjà utilisé');
+    if (!result) throw new UnauthorizedException('Invalid session or token already used');
     return result;
   }
 
@@ -92,7 +92,7 @@ export class SessionsService {
       await lockUsers(tx, [userId]);
       await tx.authSession.updateMany({ where: { id: sessionId, userId, revokedAt: null }, data: { revokedAt: new Date() } });
     });
-    return { message: 'Déconnecté' };
+    return { message: 'Logged out' };
   }
 
   revokeAll(tx: Prisma.TransactionClient, userId: string) {
@@ -100,12 +100,12 @@ export class SessionsService {
   }
 
   async validateAccess(payload: JwtPayload) {
-    if (payload.type !== 'access' || !payload.sid || !payload.sub) throw new UnauthorizedException('Session invalide');
+    if (payload.type !== 'access' || !payload.sid || !payload.sub) throw new UnauthorizedException('Invalid session');
     const session = await this.prisma.authSession.findFirst({
       where: { id: payload.sid, userId: payload.sub, revokedAt: null, expiresAt: { gt: new Date() } },
       include: { user: true },
     });
-    if (!session) throw new UnauthorizedException('Session expirée ou révoquée');
+    if (!session) throw new UnauthorizedException('Session expired or revoked');
     return toPublicUser(session.user);
   }
 

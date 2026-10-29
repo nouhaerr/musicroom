@@ -38,6 +38,13 @@ disponibilité du registre. L’audit complet incluant les outils de développem
 reste consultable avec `npm audit` ; ses limites sont détaillées dans
 [SECURITY-AUTH.md](SECURITY-AUTH.md).
 
+Le correctif de sécurité du 27 octobre 2026 conserve NestJS 11 et impose
+`multer ^2.5.0` uniquement sous `@nestjs/platform-express` via `overrides`.
+Cette exception compense la dépendance Multer 2.4.0 encore fixée par NestJS 11 ;
+elle pourra être retirée quand une version compatible intégrera le correctif.
+Le lockfile met également à jour `body-parser`, `qs` et `nodemailer`.
+L’audit de production reste bloquant.
+
 Les identifiants PostgreSQL du workflow appartiennent uniquement à son service
 éphémère. Aucun secret de développement/production ni de fournisseur OAuth/SMTP
 n’est requis. Les tests génèrent leurs propres secrets JWT. Le token GitHub a
@@ -64,10 +71,15 @@ de générer le client Prisma et de fournir une `TEST_DATABASE_URL` accessible d
 l’hôte. Les tests d’intégration exigent un rôle pouvant créer des schémas et ne
 réinitialisent jamais le schéma `public`.
 
-Le workflow doit être poussé avant de pouvoir constater un résultat dans GitHub
-Actions. Une règle GitHub de protection de branche peut ensuite rendre le job
+Le workflow backend a réussi le 8 octobre 2026 pour `c74e20b` dans la PR #4 :
+[voir l’exécution](https://github.com/nouhaerr/musicroom/actions/runs/37807903307).
+Une règle GitHub de protection de branche peut ensuite rendre le job
 `Backend CI / backend` obligatoire avant fusion ; elle n’est pas configurée par
 le fichier YAML.
+
+Le nouveau workflow `mobile-ci.yml` contrôle séparément le projet Expo : TypeScript,
+tests du client et export des bundles iOS/Android. Il ne réalise pas de build APK/IPA
+ni de test sur appareil. Son premier résultat GitHub reste à constater après push.
 
 Configuration fondée sur les documentations officielles :
 [typescript-eslint](https://typescript-eslint.io/getting-started/),

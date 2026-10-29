@@ -64,7 +64,7 @@ export class PlaylistsService {
   async findByIdOrThrow(id: string): Promise<Playlist> {
     const playlist = await this.prisma.playlist.findUnique({ where: { id } });
     if (!playlist) {
-      throw new NotFoundException('Playlist introuvable');
+      throw new NotFoundException('Playlist not found');
     }
     return playlist;
   }
@@ -73,6 +73,29 @@ export class PlaylistsService {
     const playlist = await this.findByIdOrThrow(id);
     await this.assertCanView(playlist, userId);
     return playlist;
+  }
+
+  async updateAccess(id: string, ownerId: string, data: { visibility: Visibility; editLicense: EditLicense }) {
+    const updated = await this.prisma.$transaction(async tx => {
+      const rows = await tx.$queryRaw<{ ownerId: string }[]>`SELECT "ownerId" FROM "Playlist" WHERE id = ${id} FOR UPDATE`;
+      if (!rows[0]) throw new NotFoundException('Playlist not found');
+      if (rows[0].ownerId !== ownerId) throw new ForbiddenException('Owner access required');
+      return tx.playlist.update({ where: { id }, data });
+    });
+    this.realtime.playlistChanged(id);
+    return updated;
+  }
+
+  async listInvitations(id: string, ownerId: string, query: PaginationDto) {
+    const playlist = await this.findByIdOrThrow(id);
+    if (playlist.ownerId !== ownerId) throw new ForbiddenException('Owner access required');
+    return this.prisma.invitation.findMany({
+      where: { playlistId: id, ...activeInvitation },
+      select: { id: true, status: true, invitedUserId: true, invitedUser: {
+        select: { id: true, name: true, username: true, publicInfo: true, musicPreferences: true },
+      } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], ...paginate(query),
+    });
   }
 
   // Everything a client shows for a playlist (the same data as GET /playlists/:id and GET /songs),
@@ -130,7 +153,7 @@ export class PlaylistsService {
       return added;
     } catch (e: unknown) {
       if (this.isUniqueConstraintError(e)) {
-        throw new ConflictException('Ce morceau est déjà dans la playlist');
+        throw new ConflictException('This track is already in the playlist');
       }
       throw e;
     }
@@ -154,10 +177,10 @@ export class PlaylistsService {
       // After a move the row stays locked until the transaction ends, so it cannot be removed
       // before it is read here. Without a move, this read tells "gone" from "moved by someone else".
       const current = await tx.playlistSong.findFirst({ where: { id: playlistSongId, playlistId }, include: { song: true } });
-      if (!current) throw new NotFoundException('Morceau introuvable dans cette playlist');
+      if (!current) throw new NotFoundException('Track not found in this playlist');
       if (count === 0) {
         throw new ConflictException(
-          'Ce morceau a été déplacé entre-temps par quelqu\'un d\'autre : rafraîchissez la playlist',
+          'This track was moved by another user. Refresh the playlist',
         );
       }
       return current;
@@ -172,7 +195,7 @@ export class PlaylistsService {
 
     // One statement: of several simultaneous removals, one deletes the song and the others find nothing
     const { count } = await this.prisma.playlistSong.deleteMany({ where: { id: playlistSongId, playlistId } });
-    if (count === 0) throw new NotFoundException('Morceau introuvable dans cette playlist');
+    if (count === 0) throw new NotFoundException('Track not found in this playlist');
     this.realtime.playlistChanged(playlistId);
     return { deleted: true };
   }
@@ -182,7 +205,7 @@ export class PlaylistsService {
   // -----------------------------------------------------------------
   private async assertCanView(playlist: Playlist, userId: string): Promise<void> {
     if ((await this.viewers(playlist, [userId])).has(userId)) return;
-    throw new ForbiddenException('Cette playlist est privée');
+    throw new ForbiddenException('This playlist is private');
   }
 
   // Which of these users may see the playlist: everyone if it is public, otherwise its owner and
@@ -208,7 +231,7 @@ export class PlaylistsService {
     if (playlist.editLicense === EditLicense.EVERYONE) return;
     if (playlist.ownerId === userId) return;
     if (await this.isCollaborator(playlist.id, userId)) return;
-    throw new ForbiddenException('Seuls les collaborateurs invités peuvent éditer cette playlist');
+    throw new ForbiddenException('Only invited collaborators can edit this playlist');
   }
 
   private async isCollaborator(playlistId: string, userId: string): Promise<boolean> {

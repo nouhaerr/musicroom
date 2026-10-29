@@ -81,7 +81,11 @@ second est obtenu après la connexion de l'utilisateur à Google.
 ## Préparation Expo Android/iOS
 
 Le projet Expo est le dossier du frontend mobile (écrans, navigation, boutons),
-avec `app.json` ou `app.config.*`. Il n'est pas présent dans ce dépôt à ce stade.
+avec `app.json` ou `app.config.*`. Une base email/session est disponible dans
+[`music-room-mobile`](../../music-room-mobile/README.md). Google est maintenant
+intégré côté mobile via `react-native-nitro-google-signin` ;
+les identifiants natifs et la recette réelle restent à faire. Voir le
+[guide Google natif](../../music-room-mobile/docs/GOOGLE-NATIVE.md). Facebook natif reste à intégrer.
 Le SDK Google natif nécessite une development build Expo ; Expo Go ne suffit pas.
 
 Créer les clients natifs dans **le même projet Google Cloud**, une fois leurs
@@ -95,8 +99,8 @@ identifiants connus :
 
 Pour Android, la signature locale, la build EAS et la signature Play Store
 peuvent différer : configurer les empreintes des builds effectivement utilisées.
-Pour iOS sans Firebase, le plugin `@react-native-google-signin/google-signin`
-utilise `iosUrlScheme`, fourni par le client iOS Google.
+Pour iOS sans Firebase, le plugin `react-native-nitro-google-signin`
+utilise `iosUrlScheme`, calculé ici depuis le client iOS Google.
 
 Lors de l'intégration mobile, configurer le SDK avec le client Web commun et le
 client iOS. Transmettre son `idToken` au backend, puis utiliser les JWT Sonora

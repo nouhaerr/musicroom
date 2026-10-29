@@ -1,8 +1,9 @@
-import { Module } from '@nestjs/common';
-import { APP_INTERCEPTOR } from '@nestjs/core';
-import { ActionLogInterceptor } from './action-log.interceptor';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import { ActionLogMiddleware } from './action-log.middleware';
 
-@Module({
-  providers: [{ provide: APP_INTERCEPTOR, useClass: ActionLogInterceptor }],
-})
-export class LoggingModule {}
+@Module({ providers: [ActionLogMiddleware] })
+export class LoggingModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(ActionLogMiddleware).forRoutes('{*path}');
+  }
+}

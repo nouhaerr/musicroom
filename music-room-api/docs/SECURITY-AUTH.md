@@ -37,9 +37,20 @@ si l’email est déjà utilisé.
   `NODE_ENV=production`. Utiliser SMTP pour l’envoi réel.
 - La conservation des sessions consommées, des logs et des sauvegardes, ainsi que
   la suppression des données, nécessitent une politique et une procédure opérationnelle.
-- Les échecs survenant dans les guards, avant l’intercepteur, ne sont pas tous
-  enregistrés par `ActionLogInterceptor`. Les journaux d’action ne remplacent pas
-  une supervision des échecs de connexion et du limiteur.
+- `ActionLogMiddleware` journalise les réponses HTTP terminées, y compris les
+  rejets des guards (par exemple 401), avec statut, plateforme, modèle et version.
+  Les URL sans route correspondante et les réponses 429 sont exclues avant tout accès
+  à la base pour éviter une amplification des écritures. Une réponse 404 sur une
+  route existante (ressource introuvable) reste journalisée.
+  Le mobile transmet `X-Device-Platform`, `X-Device-Model` et `X-App-Version`
+  même avant connexion (valeurs encodées avec `encodeURIComponent`). Ces
+  métadonnées sont déclaratives et limitées en longueur, jamais une preuve d’identité.
+  `X-Device-Id` n’est associé au log que si l’appareil appartient à l’utilisateur
+  authentifié. Le modèle est conservé dans `metadata.deviceModel` même après détachement.
+  Seuls la méthode et le modèle de route sont enregistrés : aucun corps, query string,
+  token ou message d’exception. Les écritures sont asynchrones et best effort.
+  Les interactions purement locales sans requête HTTP et les connexions interrompues
+  avant la fin de réponse ne sont pas couvertes. Ces logs ne remplacent pas la supervision.
 
 Les tests de charge et les protections propres aux modules musique sont hors du
 périmètre de cette note.
@@ -122,3 +133,12 @@ L’image Docker de développement installe ces outils ; le résultat de l’aud
 
 La CI vérifie l’audit de production. Utiliser `npm audit` pour surveiller aussi
 les outils de développement.
+
+## Device installation identity
+
+`POST /devices` accepts an optional UUID `installationId`. A database unique constraint
+on `(userId, installationId)` makes registration idempotent, including concurrent calls,
+and updates the model/app version. The UUID describes an app installation and never
+replaces JWT authentication or ownership checks. Different accounts keep separate
+registrations. Legacy clients without the UUID retain the previous create behavior;
+legacy rows are preserved because their physical identity cannot be inferred safely.

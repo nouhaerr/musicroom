@@ -1,4 +1,5 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import sharp from 'sharp';
+import { INestApplication, ServiceUnavailableException, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -29,7 +30,8 @@ async function request(method: string, path: string, body?: unknown, token?: str
     method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, body: await response.json() };
+  const contentType = response.headers.get('content-type') ?? '';
+  return { status: response.status, body: contentType.includes('application/json') ? await response.json() : await response.text() };
 }
 
 async function account(name = 'Listener') {
@@ -128,6 +130,26 @@ describe('Email authentication and persisted sessions', () => {
     expect((await request('POST', '/auth/login', { email, password: 'wrong' })).status).toBe(401);
   });
 
+  it('recovers an unverified account after registration email delivery fails', async () => {
+    const email = `${randomUUID()}@example.com`;
+    const password = 'Test-password-123!';
+    const delivery = jest.spyOn(app.get(MailService), 'sendVerificationEmail')
+      .mockRejectedValueOnce(new ServiceUnavailableException('SMTP unavailable'));
+    try {
+      expect((await request('POST', '/auth/register', { email, password, name: 'Mail recovery' })).status).toBe(503);
+      expect(await db.user.count({ where: { email } })).toBe(1);
+      expect(verification.has(email)).toBe(false);
+      expect((await request('POST', '/auth/login', { email, password })).status).toBe(403);
+      expect((await request('POST', '/auth/resend-verification', { email })).status).toBe(201);
+      expect(verification.get(email)).toEqual(expect.any(String));
+      expect((await request('GET', `/auth/verify-email?token=${verification.get(email)}`)).status).toBe(200);
+      expect((await request('POST', '/auth/login', { email, password })).status).toBe(201);
+      expect(await db.user.count({ where: { email } })).toBe(1);
+    } finally {
+      delivery.mockRestore();
+    }
+  });
+
   it('returns a conflict for concurrent duplicate registrations', async () => {
     const data = { email: `${randomUUID()}@example.com`, password: 'Test-password-123!', name: 'Duplicate' };
     const results = await Promise.all([request('POST', '/auth/register', data), request('POST', '/auth/register', data)]);
@@ -167,12 +189,15 @@ describe('Email authentication and persisted sessions', () => {
     expect((await request('POST', '/auth/forgot-password', { email: a.email })).status).toBe(201);
     const [token, otherToken] = resets.get(a.email)!;
     expect(token).not.toBe(otherToken);
+    expect((await request('POST', '/auth/reset-password', { token, newPassword: 'No-number-password' })).status).toBe(400);
+    // Invalid input must not consume the reset token or revoke the current session.
+    expect((await request('GET', '/users/me', undefined, a.accessToken)).status).toBe(200);
     const responses = await Promise.all([
       request('POST', '/auth/reset-password', { token, newPassword: 'New-password-123!' }),
       request('POST', '/auth/reset-password', { token, newPassword: 'New-password-123!' }),
     ]);
     expect(responses.map(r => r.status).sort()).toEqual([201, 401]);
-    expect((await request('POST', '/auth/reset-password', { token: otherToken, newPassword: 'Another-password!' })).status).toBe(401);
+    expect((await request('POST', '/auth/reset-password', { token: otherToken, newPassword: 'Another-password-123!' })).status).toBe(401);
     for (const access of [a.accessToken, other.body.accessToken]) {
       expect((await request('GET', '/users/me', undefined, access)).status).toBe(401);
     }
@@ -191,6 +216,35 @@ describe('Email authentication and persisted sessions', () => {
 });
 
 describe('Social accounts', () => {
+  it.each(['google', 'facebook'] as const)('unlinks %s only for an authenticated owner with a remaining sign-in method', async provider => {
+    const a = await account();
+    const field = provider === 'google' ? 'googleId' : 'facebookId';
+    await db.user.update({ where: { id: a.id }, data: { [field]: randomUUID() } });
+    expect((await request('DELETE', `/auth/link/${provider}`)).status).toBe(401);
+    const result = await request('DELETE', `/auth/link/${provider}`, undefined, a.accessToken);
+    expect(result.status).toBe(200);
+    expect(result.body[field]).toBeNull();
+    expect(result.body.hasPassword).toBe(true);
+    expect(result.body).not.toHaveProperty('passwordHash');
+    expect((await request('POST', '/auth/login', { email: a.email, password: a.password })).status).toBe(201);
+  });
+
+  it('serializes simultaneous unlinks so a social-only user keeps one provider', async () => {
+    const a = await account();
+    await db.user.update({ where: { id: a.id }, data: { passwordHash: null, googleId: randomUUID(), facebookId: randomUUID() } });
+    const results = await Promise.all(['google', 'facebook'].map(provider => request('DELETE', `/auth/link/${provider}`, undefined, a.accessToken)));
+    expect(results.map(r => r.status).sort()).toEqual([200, 409]);
+    const user = await db.user.findUniqueOrThrow({ where: { id: a.id } });
+    expect([user.googleId, user.facebookId].filter(Boolean)).toHaveLength(1);
+  });
+
+  it('does not count an unverified password as a usable replacement', async () => {
+    const a = await account();
+    await db.user.update({ where: { id: a.id }, data: { emailVerifiedAt: null, googleId: randomUUID() } });
+    expect((await request('DELETE', '/auth/link/google', undefined, a.accessToken)).status).toBe(409);
+    expect((await db.user.findUniqueOrThrow({ where: { id: a.id } })).googleId).not.toBeNull();
+  });
+
   it.each(['google', 'facebook'])('creates one account on first login and reuses its identity (%s)', async provider => {
     const mock = provider === 'google' ? google : facebook;
     const providerId = randomUUID();
@@ -283,7 +337,9 @@ describe('Friend requests and profile visibility', () => {
     expect(responses.every(r => r.status === 201)).toBe(true);
     expect(responses.some(r => r.body.status === 'ACCEPTED')).toBe(true);
     expect(await db.friendRequest.count({ where: { status: 'PENDING', OR: [{ senderId: a.id }, { receiverId: a.id }] } })).toBe(0);
-    for (const viewer of [undefined, c.accessToken]) {
+    expect((await request('GET', `/users/${a.id}`)).status).toBe(401);
+    expect((await request('GET', '/users/search')).status).toBe(401);
+    for (const viewer of [c.accessToken]) {
       const profile = (await request('GET', `/users/${a.id}`, undefined, viewer)).body;
       expect(profile.publicInfo.bio).toBe('public');
       for (const field of ['email', 'passwordHash', 'privateInfo', 'friendsOnlyInfo', 'googleId']) expect(profile).not.toHaveProperty(field);
@@ -292,13 +348,13 @@ describe('Friend requests and profile visibility', () => {
     expect(friend.friendsOnlyInfo.bio).toBe('friends');
     expect(friend).not.toHaveProperty('privateInfo');
     expect((await request('GET', `/users/${a.id}`, undefined, a.accessToken)).body.privateInfo.bio).toBe('private');
-    const search = await request('GET', '/users/search?q=Jazz&genre=JAZZ&page=1&limit=1');
+    const search = await request('GET', '/users/search?q=Jazz&genre=JAZZ&page=1&limit=1', undefined, a.accessToken);
     expect(search.status).toBe(200);
     expect(search.body).toHaveLength(1);
     expect(search.body[0].musicPreferences).toEqual(['jazz', 'rock']);
     expect(search.body[0]).not.toHaveProperty('email');
-    expect((await request('GET', '/users/search?limit=101')).status).toBe(400);
-    expect((await request('GET', '/users/search?page=0')).status).toBe(400);
+    expect((await request('GET', '/users/search?limit=101', undefined, a.accessToken)).status).toBe(400);
+    expect((await request('GET', '/users/search?page=0', undefined, a.accessToken)).status).toBe(400);
     expect((await request('PATCH', '/users/me', { musicPreferences: { genres: ['jazz'] } }, a.accessToken)).status).toBe(400);
     expect((await request('PATCH', '/users/me', { musicPreferences: ['Jazz', 'jazz'] }, a.accessToken)).status).toBe(400);
     await request('DELETE', `/friends/${b.id}`, undefined, a.accessToken);
@@ -442,5 +498,222 @@ describe('Login rate limit', () => {
     } finally {
       throttling = jest.spyOn(ThrottlerGuard.prototype, 'canActivate').mockResolvedValue(true);
     }
+  });
+});
+
+
+describe('Profile photos', () => {
+  it('stores, exposes and removes a validated public photo without changing other profile fields', async () => {
+    const a = await account();
+    const b = await account();
+    await request('PATCH', '/users/me', { publicInfo: { bio: 'Public bio' }, privateInfo: { birthday: '1998-08-14' } }, a.accessToken);
+    const bytes = await sharp({ create: { width: 16, height: 16, channels: 3, background: '#abcdef' } }).jpeg().toBuffer();
+    const image = `data:image/jpeg;base64,${bytes.toString('base64')}`;
+    expect((await request('PUT', '/users/me/avatar', { image })).status).toBe(401);
+    expect((await request('PUT', '/users/me/avatar', { image, userId: b.id }, a.accessToken)).status).toBe(400);
+    expect((await request('PUT', '/users/me/avatar', { image: 'not an image' }, a.accessToken)).status).toBe(400);
+    const saved = await request('PUT', '/users/me/avatar', { image }, a.accessToken);
+    expect(saved.status).toBe(200);
+    expect(saved.body.publicInfo.bio).toBe('Public bio');
+    const avatar = saved.body.publicInfo.avatar;
+    expect(avatar).toMatch(/^data:image\/jpeg;base64,/);
+    expect((await request('GET', `/users/${a.id}`, undefined, b.accessToken)).body.publicInfo.avatar).toBe(avatar);
+    expect((await request('GET', `/users/${a.id}`, undefined, b.accessToken)).body).not.toHaveProperty('privateInfo');
+    // A stale normal profile edit must neither overwrite nor inject an unvalidated avatar.
+    const edited = await request('PATCH', '/users/me', { publicInfo: { bio: 'Updated', avatar: 'https://untrusted.example/photo' } }, a.accessToken);
+    expect(edited.body.publicInfo).toEqual({ bio: 'Updated', avatar });
+    expect((await request('GET', '/users/me', undefined, b.accessToken)).body.publicInfo?.avatar).toBeUndefined();
+    const removed = await request('DELETE', '/users/me/avatar', undefined, a.accessToken);
+    expect(removed.status).toBe(200);
+    expect(removed.body.publicInfo).toEqual({ bio: 'Updated' });
+    expect(removed.body.privateInfo).toEqual({ birthday: '1998-08-14' });
+    const stale = await request('PATCH', '/users/me', { publicInfo: { bio: 'Updated again', avatar } }, a.accessToken);
+    expect(stale.body.publicInfo).not.toHaveProperty('avatar');
+  });
+});
+
+
+describe('Unique usernames and social password setup', () => {
+  it('normalizes usernames, rejects invalid names and resolves concurrent claims with 409', async () => {
+    const a = await account();
+    const b = await account();
+    const username = `u_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+    const claims = await Promise.all([a, b].map(user => request('PATCH', '/users/me', { username: ` ${username.toUpperCase()} ` }, user.accessToken)));
+    expect(claims.map(r => r.status).sort()).toEqual([200, 409]);
+    const winner = claims[0].status === 200 ? a : b;
+    expect((await request('GET', `/users/${winner.id}`, undefined, b.accessToken)).body.username).toBe(username);
+    const found = await request('GET', `/users/search?q=@${username}`, undefined, b.accessToken);
+    expect(found.body.map((u: { id: string }) => u.id)).toContain(winner.id);
+    for (const invalid of ['ab', 'has space', 'a'.repeat(31), 'ééé', 12]) {
+      expect((await request('PATCH', '/users/me', { username: invalid }, winner.accessToken)).status).toBe(400);
+    }
+    expect((await request('PATCH', '/users/me', { username: null }, winner.accessToken)).body.username).toBeNull();
+    expect((await request('PATCH', '/users/me', { username }, b.accessToken)).status).toBe(200);
+  });
+
+  it.each(['google', 'facebook'] as const)('creates a password for %s only through the emailed single-use link', async provider => {
+    const email = `${randomUUID()}@example.com`;
+    const providerId = randomUUID();
+    (provider === 'google' ? google : facebook).verify.mockResolvedValue({ email, providerId, name: 'Social listener' });
+    const credentials = provider === 'google' ? { idToken: 'token' } : { accessToken: 'token' };
+    const login = await request('POST', `/auth/${provider}`, credentials);
+    expect(login.status).toBe(201);
+    const a = login.body;
+    // Exercise the unverified-mail case too: the mailbox link is what verifies it.
+    await db.user.update({ where: { id: a.user.id }, data: { emailVerifiedAt: null } });
+    expect((await request('POST', '/auth/password/setup')).status).toBe(401);
+    expect((await request('POST', '/auth/password/setup', {}, a.accessToken)).status).toBe(201);
+    expect((await db.user.findUniqueOrThrow({ where: { id: a.user.id } })).passwordHash).toBeNull();
+    const token = resets.get(email)!.at(-1)!;
+    expect((await request('POST', '/auth/reset-password', { token, newPassword: 'withoutdigits' })).status).toBe(400);
+    expect((await request('POST', '/auth/reset-password', { token, newPassword: 'New-password-123!' })).status).toBe(201);
+    expect((await request('GET', '/users/me', undefined, a.accessToken)).status).toBe(401);
+    expect((await request('POST', '/auth/reset-password', { token, newPassword: 'New-password-456!' })).status).toBe(401);
+    const fresh = await request('POST', '/auth/login', { email, password: 'New-password-123!' });
+    expect(fresh.status).toBe(201);
+    expect(fresh.body.user.id).toBe(a.user.id);
+    expect(fresh.body.user.hasPassword).toBe(true);
+    expect(fresh.body.user[provider === 'google' ? 'googleId' : 'facebookId']).toBe(providerId);
+    expect((await request('POST', '/auth/password/setup', {}, fresh.body.accessToken)).status).toBe(409);
+    expect((await request('POST', `/auth/${provider}`, credentials)).body.user.id).toBe(a.user.id);
+  });
+});
+
+
+describe('PR review regressions', () => {
+  it('treats email casing consistently across registration, login, recovery and social login', async () => {
+    const email = `case-${randomUUID()}@example.com`;
+    const password = 'Password-123!';
+    const created = await request('POST', '/auth/register', { email: ` ${email.toUpperCase()} `, password, name: 'Case test' });
+    expect(created.status).toBe(201);
+    expect(created.body.email).toBe(email);
+    expect((await request('POST', '/auth/register', { email, password, name: 'Duplicate' })).status).toBe(409);
+    expect((await request('POST', '/auth/resend-verification', { email: email.toUpperCase() })).status).toBe(201);
+    await request('GET', `/auth/verify-email?token=${verification.get(email)}`);
+    expect((await request('POST', '/auth/login', { email: email.toUpperCase(), password })).body.user.id).toBe(created.body.id);
+    await request('POST', '/auth/forgot-password', { email: email.toUpperCase() });
+    expect(resets.get(email)?.length).toBe(1);
+    for (const [provider, mock] of [['google', google], ['facebook', facebook]] as const) {
+      mock.verify.mockResolvedValue({ email: email.toUpperCase(), providerId: randomUUID(), name: 'Social case test' });
+      expect((await request('POST', `/auth/${provider}`, provider === 'google' ? { idToken: 'test' } : { accessToken: 'test' })).status).toBe(409);
+    }
+    expect(await db.user.count({ where: { email } })).toBe(1);
+  });
+
+  it('prevents concurrent registrations with case variants from creating duplicate accounts', async () => {
+    const email = `race-${randomUUID()}@example.com`;
+    const results = await Promise.all([email, email.toUpperCase()].map(value => request('POST', '/auth/register', { email: value, password: 'Password-123!', name: 'Race' })));
+    expect(results.map(result => result.status).sort()).toEqual([201, 409]);
+  });
+
+  it('rejects oversized display names on registration and profile updates', async () => {
+    const name = 'a'.repeat(101);
+    expect((await request('POST', '/auth/register', { email: `${randomUUID()}@example.com`, password: 'Password-123!', name })).status).toBe(400);
+    const user = await account();
+    expect((await request('PATCH', '/users/me', { name }, user.accessToken)).status).toBe(400);
+  });
+
+  it('does not cache token pages and renders invalid verification links as HTML', async () => {
+    for (const path of ['/auth/reset-password?token=test', '/auth/reset-password', '/auth/verify-email?token=invalid']) {
+      const response = await fetch(base + path);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(response.headers.get('referrer-policy')).toBe('no-referrer');
+      expect(response.headers.get('content-type')).toContain('text/html');
+      const html = await response.text();
+      expect(html).toContain('<!doctype html>');
+      if (path.includes('verify-email')) {
+        expect(response.status).toBe(401);
+        expect(html).toContain('invalid or expired');
+        expect(html).not.toContain('window.setTimeout');
+      }
+    }
+  });
+});
+
+
+describe('Profile review regressions', () => {
+  it('rejects blank names and trims valid registration and profile names', async () => {
+    const user = await account();
+    for (const name of ['   ', '\t\n', '\u00a0']) {
+      expect((await request('POST', '/auth/register', { email: `${randomUUID()}@example.com`, password: 'Password-123!', name })).status).toBe(400);
+      expect((await request('PATCH', '/users/me', { name }, user.accessToken)).status).toBe(400);
+    }
+    expect((await request('PATCH', '/users/me', { name: ' Alice ' }, user.accessToken)).body.name).toBe('Alice');
+    const email = `${randomUUID()}@example.com`;
+    expect((await request('POST', '/auth/register', { email, password: 'Password-123!', name: ' Bob ' })).status).toBe(201);
+    expect((await db.user.findUniqueOrThrow({ where: { email } })).name).toBe('Bob');
+  });
+
+  it('rejects large, nested and non-text profile fields before transformation', async () => {
+    const user = await account();
+    let nested: unknown = 'text';
+    for (let i = 0; i < 2000; i++) nested = { child: nested };
+    for (const section of ['publicInfo', 'friendsOnlyInfo', 'privateInfo']) {
+      for (const invalid of [null, [], { bio: 'x'.repeat(90000) }, { bio: nested }, { enabled: true },
+        { bio: ['text'] }, { ['k'.repeat(51)]: 'text' },
+        Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`key${i}`, 'text']))]) {
+        expect((await request('PATCH', '/users/me', { [section]: invalid }, user.accessToken)).status).toBe(400);
+      }
+      const valid = { bio: 'x'.repeat(500), city: 'Paris' };
+      expect((await request('PATCH', '/users/me', { [section]: valid }, user.accessToken)).body[section]).toEqual(valid);
+      expect((await request('PATCH', '/users/me', { [section]: { bio: 'x'.repeat(501) } }, user.accessToken)).status).toBe(400);
+      expect((await request('GET', '/users/me', undefined, user.accessToken)).body[section]).toEqual(valid);
+    }
+  });
+});
+
+
+describe('Review regressions: device installation and literal search', () => {
+  it('upserts one installation per account, updates its model and isolates owners', async () => {
+    const a = await account();
+    const b = await account();
+    const installationId = randomUUID();
+    const payload = { platform: 'ANDROID', model: 'Samsung Galaxy A54', appVersion: '1', installationId };
+    const registrations = await Promise.all(Array.from({ length: 4 }, () => request('POST', '/devices', payload, a.accessToken)));
+    expect(registrations.map(r => r.status)).toEqual([201, 201, 201, 201]);
+    expect(new Set(registrations.map(r => r.body.id)).size).toBe(1);
+    const other = await request('POST', '/devices', payload, b.accessToken);
+    expect(other.body.id).not.toBe(registrations[0].body.id);
+    const returned = await request('POST', '/devices', { ...payload, appVersion: '2' }, a.accessToken);
+    expect(returned.body.id).toBe(registrations[0].body.id);
+    expect(returned.body.appVersion).toBe('2');
+    expect(await db.device.count({ where: { userId: a.id, installationId } })).toBe(1);
+    expect((await request('POST', '/devices', { ...payload, installationId: 'invalid' }, a.accessToken)).status).toBe(400);
+  });
+  it('treats percent, underscore and backslash as literal characters', async () => {
+    const viewer = await account();
+    const marker = randomUUID();
+    for (const symbol of ['%', '_', String.fromCharCode(92)]) {
+      const matching = await account(`${marker}${symbol}literal`);
+      await account(`${marker}Xliteral`);
+      const result = await request('GET', `/users/search?q=${encodeURIComponent(marker + symbol)}`, undefined, viewer.accessToken);
+      expect(result.status).toBe(200);
+      expect(result.body.map((u: { id: string }) => u.id)).toEqual([matching.id]);
+    }
+  });
+});
+
+describe('Discovery friendship actions', () => {
+  it('returns persistent outgoing/incoming/accepted states through cancellation and removal', async () => {
+    const name = `Friend-State-${randomUUID()}`;
+    const a = await account(`Sender-${randomUUID()}`);
+    const b = await account(name);
+    const state = async () => {
+      const result = await request('GET', `/users/search?q=${encodeURIComponent(name)}`, undefined, a.accessToken);
+      expect(result.status).toBe(200);
+      return result.body.find((u: { id: string }) => u.id === b.id);
+    };
+    expect((await state()).relationship).toBe('NONE');
+    const sent = await request('POST', '/friends/requests', { userId: b.id }, a.accessToken);
+    expect(await state()).toMatchObject({ relationship: 'OUTGOING', friendRequestId: sent.body.id });
+    const sender = await request('GET', `/users/search?q=${encodeURIComponent(a.user.name)}`, undefined, b.accessToken);
+    expect(sender.body.find((u: { id: string }) => u.id === a.id)).toMatchObject({ relationship: 'INCOMING', friendRequestId: sent.body.id });
+    expect((await request('DELETE', `/friends/requests/${sent.body.id}`, undefined, a.accessToken)).status).toBe(200);
+    expect(await state()).toMatchObject({ relationship: 'NONE', friendRequestId: null });
+    const again = await request('POST', '/friends/requests', { userId: b.id }, a.accessToken);
+    expect((await request('POST', `/friends/requests/${again.body.id}/accept`, {}, b.accessToken)).status).toBe(201);
+    expect(await state()).toMatchObject({ relationship: 'FRIENDS', friendRequestId: null });
+    expect((await request('DELETE', `/friends/${b.id}`, undefined, a.accessToken)).status).toBe(200);
+    expect((await state()).relationship).toBe('NONE');
   });
 });

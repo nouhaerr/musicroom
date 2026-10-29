@@ -67,7 +67,7 @@ describe('Google ID token verification', () => {
       new gaxios.GaxiosError('private-error-details', { url: new URL('https://www.googleapis.com/oauth2/v1/certs'), headers: new Headers() }),
     );
     await expect(new GoogleProvider(config()).verify(token())).rejects.toMatchObject({
-      status: 503, message: 'Vérification Google temporairement indisponible',
+      status: 503, message: 'Google verification is temporarily unavailable',
     });
   });
 });
