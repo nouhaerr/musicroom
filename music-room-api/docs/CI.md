@@ -38,6 +38,13 @@ disponibilité du registre. L’audit complet incluant les outils de développem
 reste consultable avec `npm audit` ; ses limites sont détaillées dans
 [SECURITY-AUTH.md](SECURITY-AUTH.md).
 
+Le correctif de sécurité du 27 octobre 2026 conserve NestJS 11 et impose
+`multer ^2.5.0` uniquement sous `@nestjs/platform-express` via `overrides`.
+Cette exception compense la dépendance Multer 2.4.0 encore fixée par NestJS 11 ;
+elle pourra être retirée quand une version compatible intégrera le correctif.
+Le lockfile met également à jour `body-parser`, `qs` et `nodemailer`.
+L’audit de production reste bloquant.
+
 Les identifiants PostgreSQL du workflow appartiennent uniquement à son service
 éphémère. Aucun secret de développement/production ni de fournisseur OAuth/SMTP
 n’est requis. Les tests génèrent leurs propres secrets JWT. Le token GitHub a

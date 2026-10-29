@@ -1,6 +1,7 @@
+import { UpdateAccessDto } from './dto/update-access.dto';
 import { PaginationDto } from '../common/pagination.dto';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags, ApiOperation, ApiForbiddenResponse, ApiBadRequestResponse } from '@nestjs/swagger';
 import { PlaylistsService } from './playlists.service';
 import { CreatePlaylistDto } from './dto/create-playlist.dto';
 import { ListPlaylistsDto } from './dto/list-playlists.dto';
@@ -34,6 +35,21 @@ export class PlaylistsController {
   @Get(':id')
   getDetail(@CurrentUser() user: PublicUser, @Param('id') id: string) {
     return this.playlistsService.getDetail(id, user.id);
+  }
+
+  @ApiOperation({ summary: 'Update playlist visibility and editing permissions (owner only)' })
+  @ApiForbiddenResponse({ description: 'Owner access required' })
+  @ApiBadRequestResponse({ description: 'Invalid visibility or edit license' })
+  @Patch(':id/access')
+  updateAccess(@CurrentUser() user: PublicUser, @Param('id') id: string, @Body() dto: UpdateAccessDto) {
+    return this.playlistsService.updateAccess(id, user.id, dto);
+  }
+
+  @ApiOperation({ summary: 'List pending and accepted invitations (owner only, paginated)' })
+  @ApiForbiddenResponse({ description: 'Owner access required' })
+  @Get(':id/invitations')
+  invitations(@CurrentUser() user: PublicUser, @Param('id') id: string, @Query() query: PaginationDto) {
+    return this.playlistsService.listInvitations(id, user.id, query);
   }
 
   @Post(':id/invite')

@@ -329,3 +329,35 @@ describe('A playlist holds at most 100 songs', () => {
     expect(await songs(id, owner.token)).toHaveLength(100);
   });
 });
+
+describe('Playlist access settings', () => {
+  it('restricts settings and invitation lists to the owner and applies visibility changes', async () => {
+    const { owner, id } = await playlistWithSongs(0);
+    const guest = await account();
+    const outsider = await account();
+    const route = `/playlists/${id}`;
+    const settings = { visibility: 'PRIVATE', editLicense: 'INVITED_ONLY' };
+    expect((await request('PATCH', `${route}/access`, settings, outsider.token)).status).toBe(403);
+    expect((await request('GET', `${route}/invitations`, undefined, outsider.token)).status).toBe(403);
+    expect((await request('PATCH', `${route}/access`, { ...settings, visibility: 'INVALID' }, owner.token)).status).toBe(400);
+    expect((await request('POST', `${route}/invite`, { userId: guest.id }, owner.token)).status).toBe(201);
+    const invites = await request('GET', `${route}/invitations?limit=1&page=1`, undefined, owner.token);
+    expect(invites.status).toBe(200);
+    expect(invites.body).toHaveLength(1);
+    expect(invites.body[0]).toMatchObject({ status: 'PENDING', invitedUserId: guest.id, invitedUser: { id: guest.id } });
+    expect(invites.body[0].invitedUser).not.toHaveProperty('email');
+    expect((await request('GET', `${route}/invitations?limit=1&page=2`, undefined, owner.token)).body).toEqual([]);
+    expect((await request('PATCH', `${route}/access`, settings, owner.token)).status).toBe(200);
+    expect((await request('GET', route, undefined, outsider.token)).status).toBe(403);
+    expect((await request('GET', route, undefined, guest.token)).status).toBe(200);
+    expect((await add(id, guest.token)).status).toBe(403);
+    expect((await request('POST', `/invitations/${invites.body[0].id}/accept`, {}, guest.token)).status).toBe(201);
+    expect((await add(id, guest.token)).status).toBe(201);
+    expect((await request('GET', `${route}/invitations`, undefined, owner.token)).body[0].status).toBe('ACCEPTED');
+    expect((await request('DELETE', `${route}/invitations/${guest.id}`, undefined, owner.token)).status).toBe(200);
+    expect((await request('GET', route, undefined, guest.token)).status).toBe(403);
+    expect((await request('GET', `${route}/invitations`, undefined, owner.token)).body).toEqual([]);
+    expect((await request('PATCH', `${route}/access`, { visibility: 'PUBLIC', editLicense: 'EVERYONE' }, owner.token)).status).toBe(200);
+    expect((await request('GET', route, undefined, outsider.token)).status).toBe(200);
+  });
+});
