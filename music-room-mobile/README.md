@@ -191,7 +191,9 @@ existants restent acceptés sur la route de connexion.
 The API client sends platform, model (`expo-device`) and app version on every HTTP
 request, including registration, login and password reset. Device ownership still
 requires authentication; metadata headers are descriptive only. The backend records
-completed HTTP responses, including 401/429, without bodies or token query strings.
+completed HTTP responses on matched routes, including 401, without bodies or token
+query strings. Unmatched URLs and 429 responses are excluded before any logging
+database access; a missing resource (404) on a matched route is still logged.
 Purely local UI interactions are not sent as action logs.
 
 After pulling the `expo-device` dependency, rebuild the development client with
@@ -206,3 +208,22 @@ registrations. Clearing app storage can create a new installation identity.
 Existing legacy registrations have no installation UUID. They cannot safely be merged
 by model (two real phones can have the same model); detach obsolete entries manually.
 Apply the new API migration before running this mobile version.
+
+### Playlist access and people
+
+Open **Playlists → Access & people** on a playlist you own. Save Public/Private
+visibility and Everyone/Invited people only editing permissions before managing
+invitations. Search for a user to invite them; pending and accepted invitations
+are listed separately by status, with pagination and removal confirmation.
+Invitations appear in the recipient's invitation list; this action does not send
+an email reminder. A music icon is shown because playlists have no cover field.
+
+The API adds owner-only `PATCH /playlists/:id/access` and
+`GET /playlists/:id/invitations?page=1&limit=20`. Updating settings emits the existing
+playlist realtime update after commit. Private playlists remain restricted to the
+owner and active invitees regardless of editing license.
+
+Manual checks: change visibility and reopen the screen; invite a second account;
+accept from that account and reopen the owner screen to see the accepted status;
+remove it and verify private access is denied. Check unsaved-change confirmation
+and retry after a network failure. This page does not implement track editing.

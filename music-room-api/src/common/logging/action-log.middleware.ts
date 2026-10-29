@@ -26,6 +26,9 @@ export class ActionLogMiddleware implements NestMiddleware {
   }
 
   private async writeLog(request: LoggedRequest, statusCode: number): Promise<void> {
+    // Unmatched URLs bypass route guards; throttled requests must not amplify database writes.
+    const route = request.route?.path;
+    if (statusCode === 429 || typeof route !== 'string') return;
     try {
       const deviceId = metadataHeader(request, 'x-device-id', 100);
       const device = deviceId && request.user
@@ -35,7 +38,6 @@ export class ActionLogMiddleware implements NestMiddleware {
       const model = metadataHeader(request, 'x-device-model', 200);
       const version = metadataHeader(request, 'x-app-version', 50);
       // Only route templates: never bodies, query strings, tokens or error messages.
-      const route = typeof request.route?.path === 'string' ? request.route.path : '[unmatched]';
       await this.prisma.actionLog.create({ data: {
         userId: request.user?.id,
         deviceId: device?.id,

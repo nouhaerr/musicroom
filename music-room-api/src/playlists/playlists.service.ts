@@ -110,6 +110,29 @@ export class PlaylistsService {
     return { ...playlist, canEdit: await this.canEdit(playlist, userId), invitation };
   }
 
+  async updateAccess(id: string, ownerId: string, data: { visibility: Visibility; editLicense: EditLicense }) {
+    const updated = await this.prisma.$transaction(async tx => {
+      const rows = await tx.$queryRaw<{ ownerId: string }[]>`SELECT "ownerId" FROM "Playlist" WHERE id = ${id} FOR UPDATE`;
+      if (!rows[0]) throw new NotFoundException('Playlist not found');
+      if (rows[0].ownerId !== ownerId) throw new ForbiddenException('Owner access required');
+      return tx.playlist.update({ where: { id }, data });
+    });
+    this.realtime.playlistChanged(id);
+    return updated;
+  }
+
+  async listInvitations(id: string, ownerId: string, query: PaginationDto) {
+    const playlist = await this.findByIdOrThrow(id);
+    if (playlist.ownerId !== ownerId) throw new ForbiddenException('Owner access required');
+    return this.prisma.invitation.findMany({
+      where: { playlistId: id, ...activeInvitation },
+      select: { id: true, status: true, invitedUserId: true, invitedUser: {
+        select: { id: true, name: true, username: true, publicInfo: true, musicPreferences: true },
+      } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], ...paginate(query),
+    });
+  }
+
   // Everything a client shows for a playlist (the same data as GET /playlists/:id and GET /songs),
   // read as one consistent state. The realtime gateway sends it to everyone watching the playlist.
   snapshot(playlistId: string) {

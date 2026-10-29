@@ -38,7 +38,10 @@ si l’email est déjà utilisé.
 - La conservation des sessions consommées, des logs et des sauvegardes, ainsi que
   la suppression des données, nécessitent une politique et une procédure opérationnelle.
 - `ActionLogMiddleware` journalise les réponses HTTP terminées, y compris les
-  rejets des guards (401/429), avec statut, plateforme, modèle et version.
+  rejets des guards (par exemple 401), avec statut, plateforme, modèle et version.
+  Les URL sans route correspondante et les réponses 429 sont exclues avant tout accès
+  à la base pour éviter une amplification des écritures. Une réponse 404 sur une
+  route existante (ressource introuvable) reste journalisée.
   Le mobile transmet `X-Device-Platform`, `X-Device-Model` et `X-App-Version`
   même avant connexion (valeurs encodées avec `encodeURIComponent`). Ces
   métadonnées sont déclaratives et limitées en longueur, jamais une preuve d’identité.

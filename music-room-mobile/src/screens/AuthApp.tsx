@@ -445,7 +445,7 @@ function Sonora() {
               <DevicesScreen key={user.id} client={client!} onBusy={setAreaBusy} /> :
               area === 'rooms' ? (live ? <DiscoverScreen key={user.id} client={client!} live={live} /> : null) :
               area === 'playlists' ? (live ? <PlaylistsScreen key={user.id} client={client!} live={live} pageScroll={pageScroll} /> : null) :
-              <AccountListScreen key={area} client={client!} area={area} />}
+              <AccountListScreen key={area} client={client!} area={area} onBusy={setAreaBusy} />}
           </> : <>
             {screen === 'settings' ? <>
               <Text style={s.muted}>On a phone, enter your computer’s IP address on the same Wi-Fi. Changing the server signs you out.</Text>
