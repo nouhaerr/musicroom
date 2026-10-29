@@ -250,8 +250,8 @@ Réponse : `{ "ok": true }`, ou
 
 | Événement | Contenu | Quand |
 |---|---|---|
-| `party:snapshot` | `{ party, queue, queueLength }`. `party` : comme `GET /parties/:id` (avec `nowPlaying` et `playbackVersion`). `queue` : les 100 premières entrées, comme `GET /parties/:id/queue`. `queueLength` : la taille réelle de la file | À l'abonnement, puis après chaque suggestion, vote, retrait de vote et « suivant » |
-| `playlist:snapshot` | `{ playlist, songs, songsLength }`. `playlist` : comme `GET /playlists/:id`. `songs` : les 100 premiers morceaux, comme `GET /playlists/:id/songs`. `songsLength` : le nombre réel de morceaux | À l'abonnement, puis après chaque ajout, déplacement et retrait |
+| `party:snapshot` | `{ party, queue, queueLength, playingForMs }`. `party` : comme `GET /parties/:id` (avec `nowPlaying` et `playbackVersion`). `queue` : la file, comme `GET /parties/:id/queue`, au plus `MAX_PARTY_SONGS` morceaux (100 par défaut, voir « Limites connues »). `queueLength` : la taille de la file. `playingForMs` : depuis combien de millisecondes le morceau en cours joue, mesuré par le serveur (`null` si rien ne joue) | À l'abonnement, puis après chaque suggestion, vote, retrait de vote et « suivant » |
+| `playlist:snapshot` | `{ playlist, songs, songsLength }`. `playlist` : comme `GET /playlists/:id`, sans `owner`, `canEdit` ni `invitation` (propres à chaque utilisateur). `songs` : les morceaux, comme `GET /playlists/:id/songs`, au plus `MAX_PLAYLIST_SONGS` (100 par défaut, voir « Limites connues »). `songsLength` : le nombre de morceaux | À l'abonnement, puis après chaque ajout, déplacement et retrait |
 | `unsubscribed` | `{ type, id, code: "FORBIDDEN" }` | L'utilisateur n'a plus le droit de regarder (invitation révoquée ou refusée). La connexion reste ouverte |
 | `session:expired` | aucun | Le token a expiré, ou la session a été fermée (déconnexion, mot de passe changé). La connexion est fermée juste après |
 | `connection:refused` | `{ code: "TOO_MANY_CONNECTIONS" }` | L'utilisateur a déjà 5 connexions ouvertes. La connexion est fermée juste après |
@@ -282,9 +282,11 @@ Réponse : `{ "ok": true }`, ou
 2. **Remplacer, pas fusionner** : à chaque instantané, remplacer l'affichage
    par son contenu. Avec plusieurs abonnements, `party.id` ou `playlist.id`
    dit lequel est concerné.
-3. **Au-delà de 100 entrées** : si `queueLength` ou `songsLength` dépasse ce
-   qui est reçu, charger les pages suivantes par REST, et les recharger en
-   arrière-plan à chaque instantané.
+3. **Pas de pages à charger** : une file a au plus `MAX_PARTY_SONGS` morceaux
+   et une playlist au plus `MAX_PLAYLIST_SONGS` (100 par défaut, voir
+   `.env.example` ; le suivant est refusé avec 409), un instantané contient donc
+   toute la liste. Seule exception : une liste plus longue que la limite (voir
+   « Limites connues »).
 4. **`session:expired`** : appeler `POST /auth/refresh`, ouvrir une nouvelle
    connexion avec le nouveau token, puis se réabonner. Socket.io ne se
    reconnecte pas tout seul quand c'est le serveur qui ferme.
@@ -301,6 +303,9 @@ Réponse : `{ "ok": true }`, ou
    `GET /parties/:id/votes/mine` en ouvrant l'événement et à chaque
    réabonnement, puis tenir cette liste à jour avec les réponses de ses
    propres votes (`201` : ajouter, `200` au retrait : enlever).
+10. **Barre de progression** : partir de `playingForMs` et compter à partir
+    de l'instant où l'instantané est reçu. Ne pas comparer l'horloge du
+    téléphone à `nowPlayingStartedAt` : les deux horloges peuvent différer.
 
 ### Limites et journal d'actions
 
@@ -321,8 +326,19 @@ Réponse : `{ "ok": true }`, ou
   plus tard à l'expiration de son access token (15 min par défaut).
 - **Les tentatives de connexion ne sont pas limitées par IP** : un token
   invalide est rejeté sans requête en base.
-- **Seules les 100 premières entrées** sont dans un instantané (voir le
-  point 3 ci-dessus).
+- **Une file a au plus `MAX_PARTY_SONGS` morceaux, une playlist au plus
+  `MAX_PLAYLIST_SONGS`** (100 par défaut) : c'est la taille d'un instantané,
+  envoyé en entier à chaque changement (voir le point 3 ci-dessus).
+- **La limite décide de ce qui est disponible, pas seulement de ce qu'on peut
+  ajouter** (choix voulu) : si une liste a plus de morceaux que la limite (limite
+  abaissée dans `.env`, ou plus tard une offre payante qui expire), les morceaux
+  en trop restent en base mais ne sont pas envoyés. L'instantané garde les
+  premiers dans l'ordre de la liste : la position pour une playlist, les votes
+  pour une file (les suivants y entrent à mesure que les premiers sont joués).
+  Rien n'est supprimé : ils reviennent dès que la limite remonte. Ajouter reste
+  refusé (409) tant que la liste est à la limite ou au-dessus.
+  `test/list-limit.e2e-spec.ts` le vérifie : 5 morceaux en base et une limite
+  de 3, l'instantané en envoie 3.
 
 ## Prochaines étapes (non encore implémentées)
 

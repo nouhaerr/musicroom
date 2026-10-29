@@ -4,6 +4,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } f
 import { ApiBearerAuth, ApiTags, ApiOperation, ApiForbiddenResponse, ApiBadRequestResponse } from '@nestjs/swagger';
 import { PlaylistsService } from './playlists.service';
 import { CreatePlaylistDto } from './dto/create-playlist.dto';
+import { ListPlaylistsDto } from './dto/list-playlists.dto';
 import { AddSongToPlaylistDto, InviteCollaboratorDto, MoveSongDto } from './dto/playlist-actions.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -22,7 +23,7 @@ export class PlaylistsController {
   }
 
   @Get()
-  findPublic(@CurrentUser() user: PublicUser, @Query() query: PaginationDto) {
+  findPublic(@CurrentUser() user: PublicUser, @Query() query: ListPlaylistsDto) {
     return this.playlistsService.findPublic(user.id, query);
   }
 

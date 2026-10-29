@@ -233,6 +233,19 @@ export class ApiClient {
     }
   }
 
+  // What the realtime socket sends when it connects. Pass the access token the server just
+  // refused to renew it first, with the rule of a 401: only if no request has renewed it meanwhile.
+  async socketAuth(refusedToken?: string): Promise<{ token: string; deviceId: string | null }> {
+    if (!this.session) throw new ApiError(401, 'Please log in.');
+    if (this.session.accessToken === refusedToken) await this.refresh();
+    if (this.deviceInfo) {
+      await this.registerDevice(this.deviceInfo.platform, this.deviceInfo.model, this.deviceInfo.appVersion);
+    }
+    // A logout may have closed the session during the two steps above
+    if (!this.session) throw new ApiError(401, 'Session closed.');
+    return { token: this.session.accessToken, deviceId: this.deviceId };
+  }
+
   async login(email: string, password: string) {
     await this.authenticate('/auth/login', async () => ({ email: email.trim(), password }));
   }
