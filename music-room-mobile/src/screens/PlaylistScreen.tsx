@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
-import { faGripVertical, faLock, faMusic, faPlus, faTrashCan } from '@fortawesome/free-solid-svg-icons';
+import { faGripVertical, faLock, faMusic, faPlus, faTrashCan, faUsers } from '@fortawesome/free-solid-svg-icons';
 import Sortable, { type SortableGridDragEndParams, type SortableGridRenderItem } from 'react-native-sortables';
 import type { AnimatedRef } from 'react-native-reanimated';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
@@ -14,6 +14,7 @@ import { BackLink } from '../components/BackLink';
 import { Button } from '../components/FormControls';
 import { OutlineButton } from '../components/OutlineButton';
 import { styles } from '../components/ProfileUI';
+import { AccessPeopleScreen } from './AccessPeopleScreen';
 import { AddTracksScreen } from './AddTracksScreen';
 
 // Why the page can no longer show the playlist, in words for the user
@@ -39,6 +40,7 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
   const [busy, setBusy] = useState(false);
   const [moving, setMoving] = useState(false); // a move is on its way to the server: no other drag until it is answered
   const [adding, setAdding] = useState(false); // the Add tracks page is open, drawn in place of this one
+  const [managing, setManaging] = useState(false); // the owner's Access & people page is open, drawn in place of this one
   const [error, setError] = useState('');
   useAutoDismiss(error, setError);
   useScreenToast(error, ''); // shown at the bottom of the screen: a bin can be far down the list
@@ -157,6 +159,10 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
     return <AddTracksScreen client={client} playlistId={playlistId} name={snapshot.playlist.name} songs={snapshot.songs}
       onForbidden={() => setReloadPage(n => n + 1)} onBack={() => setAdding(false)} />;
   }
+  // Back from it, the page data is read again: who may edit may have changed there
+  if (managing) {
+    return <AccessPeopleScreen client={client} playlistId={playlistId} onBack={() => { setManaging(false); setReloadPage(n => n + 1); }} />;
+  }
 
   const { playlist, songs, songsLength } = snapshot;
   const cover = songs[0]?.song.thumbnailUrl;
@@ -164,10 +170,16 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
   return <View style={styles.section}>
     <View style={p.top}>
       <BackLink title="Back to playlists" disabled={busy} onPress={onBack} />
-      {canEdit ? <Pressable accessibilityRole="button" accessibilityLabel="Add tracks" disabled={busy} onPress={() => setAdding(true)}
-        style={({ pressed }) => [p.plus, (busy || pressed) && p.dim]}>
-        <FontAwesomeIcon icon={faPlus} color="#A9B6FF" size={24} />
-      </Pressable> : null}
+      <View style={p.icons}>
+        {page.owner.id === userId ? <Pressable accessibilityRole="button" accessibilityLabel="Access & people" disabled={busy} onPress={() => setManaging(true)}
+          style={({ pressed }) => [p.icon, (busy || pressed) && p.dim]}>
+          <FontAwesomeIcon icon={faUsers} color="#A9B6FF" size={24} />
+        </Pressable> : null}
+        {canEdit ? <Pressable accessibilityRole="button" accessibilityLabel="Add tracks" disabled={busy} onPress={() => setAdding(true)}
+          style={({ pressed }) => [p.icon, (busy || pressed) && p.dim]}>
+          <FontAwesomeIcon icon={faPlus} color="#A9B6FF" size={24} />
+        </Pressable> : null}
+      </View>
     </View>
     <View style={p.header}>
       {cover ? <Image source={{ uri: cover }} style={p.cover} />
@@ -218,7 +230,8 @@ const SongRow = memo(function SongRow({ entry, addedBy, canEdit, disabled, onRem
 
 const p = StyleSheet.create({
   top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  plus: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }, // only the +, with a finger-sized area to tap
+  icons: { flexDirection: 'row' },
+  icon: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }, // only the icon, with a finger-sized area to tap
   header: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   cover: { width: 96, height: 96, borderRadius: 14 },
   blank: { backgroundColor: '#242D3E', alignItems: 'center', justifyContent: 'center' },
