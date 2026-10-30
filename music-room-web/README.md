@@ -23,7 +23,13 @@ npm run preview
 
 ## What exists now
 
-A responsive navigation shell, home page, and clearly labelled placeholder routes. Authentication, API requests, session storage, devices and real-time features are **not implemented**. No placeholder simulates successful login or protects routes. The config helper is ready for the future HTTP client.
+Responsive navigation, email registration/login, resend verification, manual verification-link processing, password reset and logout are connected to the API. `/account` displays the authenticated user and verifies the session via `/users/me`. Errors/success notices disappear after 10 seconds; password requirements appear on invalid submission.
+
+The portable mobile API client was copied into `src/api` with its session regression tests. Changes to that client must be coordinated with the mobile copy. Run `npm test` to check refresh serialization, logout races, authentication and device adapter behavior; these are mocked client tests, not browser acceptance tests.
+
+Browser sessions are **memory-only**: reload or tab closure signs out locally (the server session remains until expiry/revocation). No token is persisted in browser storage. Durable browser sessions, Google/Facebook browser SDK integration, WEB device registration and authenticated guards for future feature pages remain to implement. The backend currently accepts only IOS/ANDROID devices, so the browser does not pretend to be a mobile device.
+
+Existing emails still point to the backend's mobile landing pages. Paste the emailed URL into the web verification/reset form to use it here. Direct web links with `?token=` are supported, but email routing must be configured separately before claiming an end-to-end web email flow.
 
 Production hosting must serve `index.html` for browser routes (including email verification/reset links). `vite preview` is only a local build preview, not a production server.
 
