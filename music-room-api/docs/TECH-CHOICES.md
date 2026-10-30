@@ -1,14 +1,15 @@
 # Choix techniques — authentification, utilisateurs et social
 
 État au 8 octobre 2026. Cette justification couvre les composants de cette partie,
-pas une validation de tous les services du projet.
+pas une validation de tous les services du projet. Salles, playlists et temps réel :
+voir [TECH-CHOICES-MUSIC.md](TECH-CHOICES-MUSIC.md).
 
 | Choix | Pourquoi il convient au projet | Compromis et limites |
 |---|---|---|
 | NestJS + TypeScript | Modules auth, users, friends, invitations et devices séparés ; injection pour remplacer SMTP/OAuth dans les tests ; guards partagés pour les routes protégées. | Décorateurs et injection demandent un apprentissage. Le typage ne valide pas une réponse distante à l’exécution. |
 | PostgreSQL | Relations, clés étrangères et contraintes uniques pour les comptes, invitations et votes ; transactions pour les mutations concurrentes. | Les contraintes ne remplacent pas les permissions applicatives. Il faut choisir un ordre de verrouillage cohérent et tester les courses. |
 | Prisma | Client typé et migrations versionnées ; même schéma pour le développement et les tests jetables. | Un ORM ne rend pas automatiquement toutes les opérations atomiques. Le projet utilise aussi des verrous SQL explicites et traite les collisions de contraintes. |
-| REST + JSON | Contrat accessible avec Swagger, fetch et les clients mobiles ; chaque mutation a une route et des statuts HTTP identifiables. | Les types de réponse et exemples Swagger restent à compléter. Les flux temps réel nécessitent une couche complémentaire. |
+| REST + JSON | Contrat accessible avec Swagger, fetch et les clients mobiles ; chaque mutation a une route et des statuts HTTP identifiables. | Chaque route documente sa réponse dans Swagger (voir [API.md](API.md)). Les flux temps réel nécessitent une couche complémentaire. |
 | JWT + sessions persistées | Access tokens signés, avec vérification de la session en base pour rendre logout/reset effectifs sans attendre leur expiration. | Lecture en base sur les accès protégés. Le client doit sérialiser les renouvellements ; un token consommé rejoué révoque toutes les sessions. |
 | bcrypt pour les mots de passe | Hash coûteux, avec sel géré par la bibliothèque ; coût 12 dans cette application. | Coût CPU à mesurer sous charge. Le hash ne protège pas contre toutes les tentatives en ligne : le limiteur est aussi nécessaire. |
 | SHA-256 pour les tokens de refresh/reset | Comparaison avec un hash en base sans stocker les tokens utilisables en clair. Ces tokens ne sont pas des mots de passe choisis par l’utilisateur. | La sécurité dépend aussi des secrets de signature aléatoires et du stockage du token côté client. |

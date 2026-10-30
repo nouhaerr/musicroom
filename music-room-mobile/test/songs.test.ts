@@ -41,6 +41,16 @@ test('an answer without a list of songs is refused instead of being shown', asyn
   }
 });
 
+test('the extract link is asked for the stored song, and an answer without a link is refused', async () => {
+  const f = fixture(() => json({ songId: 'song-1', previewUrl: 'https://cdn.example.test/extract.mp3' }));
+  await f.client.login(user.email, 'password');
+  assert.equal(await songsApi(f.client).preview('song-1'), 'https://cdn.example.test/extract.mp3');
+  assert.equal(f.calls[1].url.pathname, '/songs/song-1/preview');
+  const empty = fixture(() => json({ songId: 'song-1' }));
+  await empty.client.login(user.email, 'password');
+  await assert.rejects(songsApi(empty.client).preview('song-1'), /Invalid preview response/);
+});
+
 test('a refusal of the server keeps its message', async () => {
   const f = fixture(() => json({ message: 'Music catalog unavailable' }, 502));
   await f.client.login(user.email, 'password');

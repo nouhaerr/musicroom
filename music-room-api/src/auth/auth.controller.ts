@@ -1,6 +1,8 @@
 import { BadRequestException, Body, Controller, Delete, Get, Header, Post, Query, Req, Res, UnauthorizedException, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
-import { ApiBearerAuth, ApiBody, ApiTags, ApiOperation, ApiOkResponse, ApiConflictResponse } from '@nestjs/swagger';
+import {
+  ApiBearerAuth, ApiBody, ApiConflictResponse, ApiCreatedResponse, ApiOkResponse, ApiOperation, ApiProduces, ApiTags,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
@@ -18,6 +20,9 @@ import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { PublicUser } from '../users/user.mapper';
+import { MessageResponse } from '../common/responses';
+import { AccountResponse } from '../users/dto/user.responses';
+import { SessionResponse } from './dto/auth.responses';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -28,16 +33,21 @@ export class AuthController {
   ) {}
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Create an account with an email and a password; a verification email is sent' })
+  @ApiCreatedResponse({ type: AccountResponse })
   @Post('register')
-  register(@Body() dto: RegisterDto) {
+  register(@Body() dto: RegisterDto): Promise<AccountResponse> {
     return this.authService.register(dto.email, dto.password, dto.name);
   }
 
+  @ApiOperation({ summary: 'Link of the verification email: confirms the address and answers a page that opens the app' })
+  @ApiProduces('text/html')
+  @ApiOkResponse({ description: 'An HTML page', schema: { type: 'string' } })
   @Get('verify-email')
   @Header('Content-Type', 'text/html; charset=utf-8')
   @Header('Cache-Control', 'no-store')
   @Header('Referrer-Policy', 'no-referrer')
-  async verifyEmail(@Query('token') token: string, @Res({ passthrough: true }) response: Response) {
+  async verifyEmail(@Query('token') token: string, @Res({ passthrough: true }) response: Response): Promise<string> {
     try {
       await this.authService.verifyEmail(token);
     } catch (error) {
@@ -49,8 +59,10 @@ export class AuthController {
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Send the verification email again' })
+  @ApiCreatedResponse({ type: MessageResponse })
   @Post('resend-verification')
-  async resendVerification(@Body() dto: ResendVerificationDto) {
+  async resendVerification(@Body() dto: ResendVerificationDto): Promise<MessageResponse> {
     await this.authService.resendVerification(dto.email);
     return { message: 'If this account is eligible, you will receive an email. If nothing arrives, try again later.' };
   }
@@ -59,27 +71,35 @@ export class AuthController {
   // et attache le résultat à request.user, récupéré ici via @CurrentUser()
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @UseGuards(LocalAuthGuard)
+  @ApiOperation({ summary: 'Sign in with an email and a password' })
+  @ApiCreatedResponse({ type: SessionResponse })
   @Post('login')
   @ApiBody({ type: LoginDto })
-  login(@CurrentUser() user: PublicUser) {
+  login(@CurrentUser() user: PublicUser): Promise<SessionResponse> {
     return this.authService.login(user);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Sign out: ends this session' })
+  @ApiCreatedResponse({ type: MessageResponse })
   @Post('logout')
-  logout(@CurrentUser() user: PublicUser, @Req() request: { sessionId: string }) {
+  logout(@CurrentUser() user: PublicUser, @Req() request: { sessionId: string }): Promise<MessageResponse> {
     return this.authService.logout(user.id, request.sessionId);
   }
 
+  @ApiOperation({ summary: 'Get new tokens with your refresh token' })
+  @ApiCreatedResponse({ type: SessionResponse })
   @Post('refresh')
-  refresh(@Body() dto: RefreshTokenDto) {
+  refresh(@Body() dto: RefreshTokenDto): Promise<SessionResponse> {
     return this.authService.refreshTokens(dto.refreshToken);
   }
 
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Email a link to choose a new password' })
+  @ApiCreatedResponse({ type: MessageResponse })
   @Post('forgot-password')
-  async forgotPassword(@Body() dto: ForgotPasswordDto) {
+  async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<MessageResponse> {
     await this.authService.forgotPassword(dto.email);
     return { message: 'If this account is eligible, you will receive an email. If nothing arrives, try again later.' };
   }
@@ -89,23 +109,29 @@ export class AuthController {
   @Throttle({ default: { limit: 3, ttl: 60_000 } })
   @ApiOperation({ summary: 'Email a one-time password creation link to the signed-in social account' })
   @ApiConflictResponse({ description: 'A password is already set; use the password reset flow.' })
+  @ApiCreatedResponse({ type: MessageResponse })
   @Post('password/setup')
-  async requestPasswordSetup(@CurrentUser() user: PublicUser) {
+  async requestPasswordSetup(@CurrentUser() user: PublicUser): Promise<MessageResponse> {
     await this.authService.requestPasswordSetup(user.id);
     return { message: 'Check your email to create your password. The link expires in 30 minutes.' };
   }
 
+  @ApiOperation({ summary: 'Choose a new password with the token of the reset email' })
+  @ApiCreatedResponse({ type: MessageResponse })
   @Post('reset-password')
-  async resetPassword(@Body() dto: ResetPasswordDto) {
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<MessageResponse> {
     await this.authService.resetPassword(dto.token, dto.newPassword);
     return { message: 'Password updated' };
   }
 
+  @ApiOperation({ summary: 'Link of the reset email: answers a page that opens the app on the new-password screen' })
+  @ApiProduces('text/html')
+  @ApiOkResponse({ description: 'An HTML page', schema: { type: 'string' } })
   @Get('reset-password')
   @Header('Content-Type', 'text/html; charset=utf-8')
   @Header('Cache-Control', 'no-store')
   @Header('Referrer-Policy', 'no-referrer')
-  resetPasswordLink(@Query('token') token: string, @Res({ passthrough: true }) response: Response) {
+  resetPasswordLink(@Query('token') token: string, @Res({ passthrough: true }) response: Response): string {
     if (!token?.trim()) {
       response.status(400);
       return this.redirectPage('Reset link unavailable', 'Request a new password reset email from Sonora.', this.mobileLink('reset-password'), false);
@@ -113,47 +139,55 @@ export class AuthController {
     return this.redirectPage('Reset your password', 'Open Sonora to choose a new password.', this.mobileLink('reset-password', token));
   }
 
+  @ApiOperation({ summary: 'Sign in with Facebook (a token from the Facebook SDK)' })
+  @ApiCreatedResponse({ type: SessionResponse })
   @Post('facebook')
-  loginWithFacebook(@Body() dto: FacebookLoginDto) {
+  loginWithFacebook(@Body() dto: FacebookLoginDto): Promise<SessionResponse> {
     return this.authService.loginWithFacebook(dto.accessToken, dto.nonce);
   }
 
+  @ApiOperation({ summary: 'Sign in with Google (an id token from the Google SDK)' })
+  @ApiCreatedResponse({ type: SessionResponse })
   @Post('google')
-  loginWithGoogle(@Body() dto: GoogleLoginDto) {
+  loginWithGoogle(@Body() dto: GoogleLoginDto): Promise<SessionResponse> {
     return this.authService.loginWithGoogle(dto.idToken);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Link a Facebook account to yours' })
+  @ApiCreatedResponse({ type: AccountResponse })
   @Post('link/facebook')
-  linkFacebook(@CurrentUser() user: PublicUser, @Body() dto: FacebookLoginDto) {
+  linkFacebook(@CurrentUser() user: PublicUser, @Body() dto: FacebookLoginDto): Promise<AccountResponse> {
     return this.authService.linkFacebook(user.id, dto.accessToken, dto.nonce);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Link a Google account to yours' })
+  @ApiCreatedResponse({ type: AccountResponse })
   @Post('link/google')
-  linkGoogle(@CurrentUser() user: PublicUser, @Body() dto: GoogleLoginDto) {
+  linkGoogle(@CurrentUser() user: PublicUser, @Body() dto: GoogleLoginDto): Promise<AccountResponse> {
     return this.authService.linkGoogle(user.id, dto.idToken);
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Unlink google while keeping another sign-in method' })
-  @ApiOkResponse({ description: 'Updated own profile, without passwordHash. Existing sessions remain active.' })
+  @ApiOkResponse({ type: AccountResponse, description: 'Updated own profile, without passwordHash. Existing sessions remain active.' })
   @ApiConflictResponse({ description: 'Cannot unlink the last usable sign-in method.' })
   @Delete('link/google')
-  unlinkGoogle(@CurrentUser() user: PublicUser) {
+  unlinkGoogle(@CurrentUser() user: PublicUser): Promise<AccountResponse> {
     return this.authService.unlinkSocial(user.id, 'google');
   }
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Unlink facebook while keeping another sign-in method' })
-  @ApiOkResponse({ description: 'Updated own profile, without passwordHash. Existing sessions remain active.' })
+  @ApiOkResponse({ type: AccountResponse, description: 'Updated own profile, without passwordHash. Existing sessions remain active.' })
   @ApiConflictResponse({ description: 'Cannot unlink the last usable sign-in method.' })
   @Delete('link/facebook')
-  unlinkFacebook(@CurrentUser() user: PublicUser) {
+  unlinkFacebook(@CurrentUser() user: PublicUser): Promise<AccountResponse> {
     return this.authService.unlinkSocial(user.id, 'facebook');
   }
 

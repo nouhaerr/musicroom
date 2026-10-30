@@ -11,6 +11,8 @@
     "@fortawesome/react-native-fontawesome": "^1.0.0",
     "@react-native-community/datetimepicker": "9.1.0",
     "expo": "~57.0.27",
+    "expo-asset": "~57.0.20",
+    "expo-audio": "~57.0.5",
     "expo-build-properties": "~57.0.22",
     "expo-constants": "~57.0.21",
     "expo-crypto": "^57.0.3",

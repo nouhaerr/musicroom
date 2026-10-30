@@ -1,7 +1,7 @@
 import { FriendsModule } from './friends/friends.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
@@ -23,10 +23,12 @@ import { RealtimeModule } from './realtime/realtime.module';
       ignoreEnvFile: process.env.CONFIG_IGNORE_ENV_FILE === 'true',
       validate: validateEnvironment,
     }),
-    // Limite par défaut appliquée à toutes les routes : 60 requêtes / minute
-    // par IP. Des limites plus strictes sont posées via @Throttle() sur les
-    // routes sensibles (login, register...).
-    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 60 }]),
+    // Each route: THROTTLE_LIMIT requests per minute from one IP (60 by default). The sensitive routes
+    // (login, register...) keep their own stricter limit with @Throttle().
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => [{ ttl: 60_000, limit: config.getOrThrow<number>('THROTTLE_LIMIT') }],
+    }),
     PrismaModule,
     LoggingModule,
     MailModule,

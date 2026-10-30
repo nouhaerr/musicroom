@@ -135,6 +135,14 @@ describe('My votes in a party (GET /parties/:id/votes/mine)', () => {
     expect(votes.body).toEqual([room.entries[2], room.entries[0]]);
   });
 
+  it('refuses a second vote for the same song (409) and keeps only one', async () => {
+    const owner = await account('Owner');
+    const room = await party(owner, { songs: ['2081'] });
+    expect((await vote(room.id, room.entries[0], owner)).status).toBe(201);
+    expect((await vote(room.id, room.entries[0], owner)).status).toBe(409);
+    expect((await myVotes(room.id, owner)).body).toEqual([room.entries[0]]);
+  });
+
   it('orders by the date of the vote, not by the order the database happens to return', async () => {
     const owner = await account('Owner');
     const room = await party(owner, { songs: ['2011', '2012', '2013'] });
