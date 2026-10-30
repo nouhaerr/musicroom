@@ -69,6 +69,7 @@ Tests Facebook et permissions : [guide Facebook Login](docs/FACEBOOK-LOGIN.md).
 État de la partie auth/social et recette restante : [bilan](docs/AUTH-USERS-STATUS.md).
 Protections et limites de déploiement : [note de sécurité](docs/SECURITY-AUTH.md).
 Choix techniques : [justification](docs/TECH-CHOICES.md). Assistance IA : [note d’usage](docs/AI-USAGE.md).
+Montée en charge (V.7) : [mesures et nombre d'utilisateurs](docs/RAMP-UP.md).
 Première base Android/iOS : [guide du projet Expo](../music-room-mobile/README.md).
 
 ## Vérification automatique
@@ -343,4 +344,3 @@ Réponse : `{ "ok": true }`, ou
 ## Prochaines étapes (non encore implémentées)
 
 - Music Control Delegation (modèle `ControlDelegation` déjà en base)
-- Tests de charge (k6/Apache Benchmark)
