@@ -8,7 +8,7 @@ expliquer les protections possibles). Comme elle, ce n'est pas un audit complet.
 
 | Risque | Protection implémentée | Preuve automatisée |
 |---|---|---|
-| Voter plusieurs fois pour le même morceau | Un vote par personne et par morceau, garanti par une contrainte unique en base (`Vote`, `partySongId` + `userId`) ; le deuxième reçoit 409 | Pas de test dédié : la contrainte de la base |
+| Voter plusieurs fois pour le même morceau | Un vote par personne et par morceau, garanti par une contrainte unique en base (`Vote`, `partySongId` + `userId`) ; le deuxième reçoit 409 | `parties-room-data.e2e-spec.ts` |
 | Voter sans en avoir le droit | La règle de la salle est vérifiée par le serveur à chaque vote : tout le monde, les invités seulement, ou les personnes sur place pendant les horaires (distance calculée par le serveur) | `parties-room-data.e2e-spec.ts` |
 | Proposer deux fois le même morceau, remplir la file sans fin | Un morceau une seule fois par salle (409) ; file et playlist limitées à `MAX_PARTY_SONGS` / `MAX_PLAYLIST_SONGS` (100 par défaut, 409 au-delà) | `list-limit.e2e-spec.ts` |
 | Passer au morceau suivant à la place de l'hôte, ou deux fois en même temps | Seul le propriétaire peut le faire (403) ; verrou optimiste `playbackVersion` : une demande basée sur un état ancien reçoit 409 | `parties-playback.e2e-spec.ts` (les tests du verrou échouent sans lui) |
