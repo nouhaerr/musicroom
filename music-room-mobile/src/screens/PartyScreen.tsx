@@ -4,8 +4,9 @@ import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faCheck, faChevronUp, faPlus } from '@fortawesome/free-solid-svg-icons';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { ApiError, type ApiClient } from '../api/client';
-import { clock, partiesApi, progress, type PartySnapshot, type QueueEntry } from '../api/parties';
+import { clock, partiesApi, progress, songSeconds, type PartySnapshot, type QueueEntry } from '../api/parties';
 import type { GoneReason, Live } from '../realtime/live';
+import { playExtract, stopExtract, useExtractPlayer } from '../audio/extract';
 import { currentPosition } from '../location';
 import { Button } from '../components/FormControls';
 import { styles } from '../components/ProfileUI';
@@ -71,6 +72,34 @@ export function PartyScreen({ client, live, partyId, onBack }: {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // The owner's phone is the party's speaker: it plays the extract of the song playing now, from where the server clock
+  // is, and asks for the next song when the song's time is over. Only a new playback starts this again, not a vote.
+  const player = useExtractPlayer();
+  const playback = snapshot && snapshot.party.ownerId === client.user?.id ? snapshot.party.playbackVersion : null;
+  useEffect(() => {
+    if (playback === null || !snapshot?.party.nowPlaying) { stopExtract(player); return; }
+    const songId = snapshot.party.nowPlaying.id;
+    const durationMs = songSeconds(snapshot.party.nowPlaying.durationSec) * 1000;
+    const elapsedMs = (snapshot.playingForMs ?? 0) + Date.now() - receivedAt;
+    let current = true; // false once this playback is over: late answers then do nothing
+    const next = () => {
+      if (!current) return;
+      void api.next(partyId, playback).catch(e => {
+        // Already moved on, by the Next button or the owner's other phone: the new song comes with the next snapshot
+        if (!(e instanceof ApiError && e.status === 409) && alive.current) setError(e instanceof Error ? e.message : 'Unable to play the next song.');
+      });
+    };
+    const timer = setTimeout(next, Math.max(durationMs - elapsedMs, 0));
+    if (elapsedMs < durationMs) {
+      // Without an extract, or when it cannot be loaded, the party goes on with the next song
+      const skip = (message: string) => { if (!current) return; setError(message); clearTimeout(timer); next(); };
+      void playExtract(player, client, songId, elapsedMs / 1000, () => current)
+        .then(found => { if (!found) skip('No extract for this song.'); })
+        .catch(() => skip('Unable to play this song.'));
+    }
+    return () => { current = false; clearTimeout(timer); stopExtract(player); };
+  }, [playback]);
 
   async function action(operation: () => Promise<unknown>) {
     if (working.current) return;
