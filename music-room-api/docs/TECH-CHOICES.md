@@ -1,7 +1,8 @@
 # Choix techniques — authentification, utilisateurs et social
 
 État au 8 octobre 2026. Cette justification couvre les composants de cette partie,
-pas une validation de tous les services du projet.
+pas une validation de tous les services du projet. Salles, playlists et temps réel :
+voir [TECH-CHOICES-MUSIC.md](TECH-CHOICES-MUSIC.md).
 
 | Choix | Pourquoi il convient au projet | Compromis et limites |
 |---|---|---|
