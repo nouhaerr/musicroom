@@ -8,7 +8,7 @@ export interface CatalogTrack {
   coverUrl: string | null;
 }
 
-// The calls of the Suggest and Add tracks pages
+// The calls of the Suggest and Add tracks pages, and of the players
 export function songsApi(client: ApiClient) {
   return {
     // The first 20 songs of the catalog matching the text
@@ -16,6 +16,12 @@ export function songsApi(client: ApiClient) {
       const answer = await client.request<{ items: CatalogTrack[] }>(`/songs/search?q=${encodeURIComponent(text)}`);
       if (!Array.isArray(answer?.items)) throw new Error('Invalid search response.');
       return answer.items;
+    },
+    // A fresh link to the 30-second extract of a stored song: the links expire, so ask right before playing
+    preview: async (songId: string) => {
+      const answer = await client.request<{ previewUrl: string }>(`/songs/${encodeURIComponent(songId)}/preview`);
+      if (typeof answer?.previewUrl !== 'string') throw new Error('Invalid preview response.');
+      return answer.previewUrl;
     },
   };
 }

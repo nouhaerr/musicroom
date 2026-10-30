@@ -51,31 +51,35 @@ describe('JWT environment validation', () => {
   });
 });
 
-describe.each(['MAX_PARTY_SONGS', 'MAX_PLAYLIST_SONGS'])('How many songs a list may hold (%s)', name => {
-  const limit = (value: unknown) => validateEnvironment({ ...valid(), [name]: value })[name];
+// name, value when absent or empty, highest value accepted
+const numberSettings = [['MAX_PARTY_SONGS', 100, 1000], ['MAX_PLAYLIST_SONGS', 100, 1000], ['THROTTLE_LIMIT', 60, 1000000]] as const;
 
-  it('is 100 when absent or empty, otherwise the number written', () => {
-    expect(validateEnvironment(valid())[name]).toBe(100);
-    expect(limit('')).toBe(100);
-    for (const [value, expected] of [['250', 250], ['1', 1], ['1000', 1000], ['0100', 100]] as const) expect(limit(value)).toBe(expected);
+describe.each(numberSettings)('Whole-number setting %s (%i by default, %i at most)', (name, fallback, max) => {
+  const setting = (value: unknown) => validateEnvironment({ ...valid(), [name]: value })[name];
+
+  it('is the default when absent or empty, otherwise the number written', () => {
+    expect(validateEnvironment(valid())[name]).toBe(fallback);
+    expect(setting('')).toBe(fallback);
+    for (const [value, expected] of [['250', 250], ['1', 1], [String(max), max], ['0100', 100]] as const) expect(setting(value)).toBe(expected);
   });
 
-  it('stops the server for anything that is not a whole number from 1 to 1000', () => {
-    for (const value of ['0', '-5', 'abc', '1.5', '1001', ' 50', '1e3', 250]) {
-      expect(() => limit(value)).toThrow(`${name} must be a whole number from 1 to 1000`);
+  it('stops the server for anything that is not a whole number from 1 to its highest value', () => {
+    for (const value of ['0', '-5', 'abc', '1.5', String(max + 1), ' 50', '1e3', 250]) {
+      expect(() => setting(value)).toThrow(`${name} must be a whole number from 1 to ${max}`);
     }
   });
 
-  it('reaches the services as a number, apart from the other limit', async () => {
+  it('reaches the services as a number, apart from the other settings', async () => {
     const config = { ...valid(), [name]: '250' };
     const module = await Test.createTestingModule({ imports: [ConfigModule.forRoot({
       ignoreEnvFile: true, ignoreEnvVars: true,
       validate: () => validateEnvironment(config),
     })] }).compile();
     try {
-      const other = name === 'MAX_PARTY_SONGS' ? 'MAX_PLAYLIST_SONGS' : 'MAX_PARTY_SONGS';
       expect(module.get(ConfigService).getOrThrow(name)).toBe(250);
-      expect(module.get(ConfigService).getOrThrow(other)).toBe(100);
+      for (const [other, otherFallback] of numberSettings) {
+        if (other !== name) expect(module.get(ConfigService).getOrThrow(other)).toBe(otherFallback);
+      }
     } finally { await module.close(); }
   });
 });

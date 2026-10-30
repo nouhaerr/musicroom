@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
-import { faGripVertical, faLock, faMusic, faPlus, faTrashCan, faUsers } from '@fortawesome/free-solid-svg-icons';
+import { faGripVertical, faLock, faMusic, faPlay, faPlus, faStop, faTrashCan, faUsers } from '@fortawesome/free-solid-svg-icons';
+import { useAudioPlayerStatus, type AudioPlayer } from 'expo-audio';
 import Sortable, { type SortableGridDragEndParams, type SortableGridRenderItem } from 'react-native-sortables';
 import type { AnimatedRef } from 'react-native-reanimated';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
@@ -10,6 +11,7 @@ import { ApiError, type ApiClient } from '../api/client';
 import { clock, songSeconds } from '../api/parties';
 import { droppedPosition, playlistsApi, type PlaylistEntry, type PlaylistPage, type PlaylistSnapshot } from '../api/playlists';
 import type { GoneReason, Live } from '../realtime/live';
+import { EXTRACT_SECONDS, playExtract, stopExtract, useExtractPlayer } from '../audio/extract';
 import { BackLink } from '../components/BackLink';
 import { Button } from '../components/FormControls';
 import { OutlineButton } from '../components/OutlineButton';
@@ -47,6 +49,12 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
   const alive = useRef(false);
   const working = useRef(false);
   const declining = useRef(false); // a private playlist is being declined: losing access then means the decline worked
+  const player = useExtractPlayer();
+  const [listening, setListening] = useState<string | null>(null); // the song whose extract plays on this phone
+  const [startedAt, setStartedAt] = useState<number | null>(null); // when its extract started, on this phone's clock
+  const asked = useRef(0); // counts the songs asked for: the answer for an older one is dropped
+  const listed = useRef<PlaylistEntry[]>([]); // the list as it is now, for the song that comes next
+  listed.current = snapshot?.songs ?? [];
 
   useEffect(() => {
     alive.current = true;
@@ -68,6 +76,30 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
       .catch(e => { if (active) setPageError(e instanceof Error ? e.message : 'Unable to load the playlist.'); });
     return () => { active = false; };
   }, [api, playlistId, reloadPage]);
+
+  // Plays this song on this phone, or stops when there is none. A song without an extract is skipped, like a radio would.
+  const listen = useCallback((entry: PlaylistEntry | undefined) => {
+    const ask = ++asked.current;
+    stopExtract(player); // the last song stops at once, even while the link of the next one loads
+    setStartedAt(null);
+    if (!entry) { setListening(null); return; }
+    setListening(entry.id);
+    void playExtract(player, client, entry.song.id, 0, () => asked.current === ask)
+      .then(found => {
+        if (asked.current !== ask || !alive.current) return;
+        if (found) setStartedAt(Date.now());
+        else listen(after(listed.current, entry.id));
+      })
+      .catch(e => {
+        if (asked.current !== ask || !alive.current) return;
+        setListening(null); setError(e instanceof Error ? e.message : 'Unable to play this song.');
+      });
+  }, [player, client]);
+  const toggle = useCallback((entry: PlaylistEntry) => listen(entry.id === listening ? undefined : entry), [listen, listening]);
+  // Someone removed the song playing here: it stops
+  useEffect(() => {
+    if (listening && snapshot && !snapshot.songs.some(entry => entry.id === listening)) listen(undefined);
+  }, [snapshot, listening, listen]);
 
   // Kept the same between drawings (it only uses refs and setters), and so is remove: the rows that receive it stay drawn
   const action = useCallback(async (operation: () => Promise<unknown>) => {
@@ -133,8 +165,9 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
   const canEdit = page?.canEdit ?? false;
   const userId = client.user?.id;
   const renderSong = useCallback<SortableGridRenderItem<PlaylistEntry>>(({ item }) =>
-    <SongRow entry={item} addedBy={item.addedBy.id === userId ? 'you' : item.addedBy.name} canEdit={canEdit} disabled={busy} onRemove={remove} />,
-  [userId, canEdit, busy, remove]);
+    <SongRow entry={item} addedBy={item.addedBy.id === userId ? 'you' : item.addedBy.name} canEdit={canEdit} disabled={busy}
+      playing={item.id === listening} onPlay={toggle} onRemove={remove} />,
+  [userId, canEdit, busy, listening, toggle, remove]);
 
   if (gone) {
     return <View style={styles.section}>
@@ -199,6 +232,8 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
       </View>
     </View> : null}
 
+    {listening ? <NowPlaying player={player} title={listed.current.find(entry => entry.id === listening)?.song.title ?? ''} startedAt={startedAt}
+      onStop={() => listen(undefined)} onEnd={() => listen(after(listed.current, listening))} /> : null}
     <Text style={p.heading}>The tracklist</Text>
     {songs.length === 0 ? <Text style={styles.text}>No tracks yet.</Text> : null}
     <Sortable.Grid columns={1} data={songs} keyExtractor={entry => entry.id} renderItem={renderSong} onDragEnd={moved}
@@ -209,8 +244,9 @@ export function PlaylistScreen({ client, live, pageScroll, playlistId, onBack }:
 // One song of the tracklist. memo: drawn again only when what it shows changes. A song keeps its title, artist, picture
 // and who added it, so its id is enough: a drop or a live update does not redraw every row (that work, during the drop
 // animation, made it stutter)
-const SongRow = memo(function SongRow({ entry, addedBy, canEdit, disabled, onRemove }: {
-  entry: PlaylistEntry; addedBy: string; canEdit: boolean; disabled: boolean; onRemove: (entry: PlaylistEntry) => void;
+const SongRow = memo(function SongRow({ entry, addedBy, canEdit, disabled, playing, onPlay, onRemove }: {
+  entry: PlaylistEntry; addedBy: string; canEdit: boolean; disabled: boolean; playing: boolean;
+  onPlay: (entry: PlaylistEntry) => void; onRemove: (entry: PlaylistEntry) => void;
 }) {
   return <View style={p.entry}>
     {canEdit ? <Sortable.Handle><View style={p.handle}><FontAwesomeIcon icon={faGripVertical} color="#737D91" size={14} /></View></Sortable.Handle> : null}
@@ -220,13 +256,59 @@ const SongRow = memo(function SongRow({ entry, addedBy, canEdit, disabled, onRem
       <Text style={styles.text} numberOfLines={1}>{entry.song.artist}</Text>
       <Text style={p.meta} numberOfLines={1}>{clock(songSeconds(entry.song.durationSec))} · added by {addedBy}</Text>
     </View>
+    <Pressable accessibilityRole="button" accessibilityLabel={`${playing ? 'Stop' : 'Play'} ${entry.song.title}`} onPress={() => onPlay(entry)}
+      style={({ pressed }) => [p.bin, pressed && p.dim]}>
+      <FontAwesomeIcon icon={playing ? faStop : faPlay} color={playing ? '#B7F576' : '#A9B6FF'} size={16} />
+    </Pressable>
     {canEdit ? <Pressable accessibilityRole="button" accessibilityLabel={`Remove ${entry.song.title}`} disabled={disabled}
       onPress={() => onRemove(entry)} style={[p.bin, disabled && p.dim]}>
       <FontAwesomeIcon icon={faTrashCan} color="#B4BDCE" size={16} />
     </Pressable> : null}
   </View>;
 }, (before, after) => before.entry.id === after.entry.id && before.addedBy === after.addedBy && before.canEdit === after.canEdit
-  && before.disabled === after.disabled && before.onRemove === after.onRemove);
+  && before.disabled === after.disabled && before.playing === after.playing && before.onPlay === after.onPlay
+  && before.onRemove === after.onRemove);
+
+// The song after this one in the list, or none after the last one (or when this one is no longer in the list)
+function after(list: PlaylistEntry[], id: string) {
+  const index = list.findIndex(entry => entry.id === id);
+  return index < 0 ? undefined : list[index + 1];
+}
+
+// The song playing on this phone, with its bar. The bar counts from when the extract started, like the room's, so it never
+// shows where the last song stopped. Apart from the page: only this card is drawn again every second.
+function NowPlaying({ player, title, startedAt, onStop, onEnd }: {
+  player: AudioPlayer; title: string; startedAt: number | null; onStop: () => void; onEnd: () => void;
+}) {
+  const status = useAudioPlayerStatus(player);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => { if (status.didJustFinish) onEnd(); }, [status.didJustFinish]);
+  const elapsed = startedAt === null ? 0 : Math.min(Math.max(Math.floor((now - startedAt) / 1000), 0), EXTRACT_SECONDS);
+  const duration = EXTRACT_SECONDS;
+  return <View style={p.card}>
+    <View style={p.row}>
+      <View style={p.grow}>
+        <Text style={p.eyebrow}>NOW PLAYING</Text>
+        <Text style={p.song} numberOfLines={1}>{title}</Text>
+      </View>
+      <Pressable accessibilityRole="button" accessibilityLabel={`Stop ${title}`} onPress={onStop} style={({ pressed }) => [p.bin, pressed && p.dim]}>
+        <FontAwesomeIcon icon={faStop} color="#B7F576" size={16} />
+      </Pressable>
+    </View>
+    <View style={p.track}>
+      <View style={[p.bar, { flex: elapsed }]} />
+      <View style={{ flex: Math.max(duration - elapsed, 0) }} />
+    </View>
+    <View style={p.between}>
+      <Text style={styles.text}>{clock(elapsed)}</Text>
+      <Text style={styles.text}>{clock(duration)}</Text>
+    </View>
+  </View>;
+}
 
 const p = StyleSheet.create({
   top: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
@@ -250,4 +332,8 @@ const p = StyleSheet.create({
   meta: { color: '#737D91', fontSize: 12 },
   bin: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   dim: { opacity: 0.5 },
+  card: { backgroundColor: '#171A25', borderRadius: 16, padding: 16, gap: 10 },
+  track: { flexDirection: 'row', height: 4, borderRadius: 2, backgroundColor: '#242D3E', overflow: 'hidden' },
+  bar: { backgroundColor: '#A98BFF' },
+  between: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
 });

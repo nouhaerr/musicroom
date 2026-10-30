@@ -22,7 +22,7 @@ let schemaCreated = false;
 let throttling: jest.SpyInstance;
 let deezer: jest.SpyInstance;
 // The files of one run share process.env: put these back at the end
-const limitsBefore = { MAX_PARTY_SONGS: process.env.MAX_PARTY_SONGS, MAX_PLAYLIST_SONGS: process.env.MAX_PLAYLIST_SONGS };
+const limitsBefore = { MAX_PARTY_SONGS: process.env.MAX_PARTY_SONGS, MAX_PLAYLIST_SONGS: process.env.MAX_PLAYLIST_SONGS, THROTTLE_LIMIT: process.env.THROTTLE_LIMIT };
 
 type Account = { id: string; name: string; token: string };
 
@@ -70,8 +70,8 @@ beforeAll(async () => {
     DATABASE_URL: url.href,
     JWT_ACCESS_SECRET: randomBytes(32).toString('hex'), JWT_REFRESH_SECRET: randomBytes(32).toString('hex'),
     JWT_ACCESS_EXPIRES_IN: '15m', JWT_REFRESH_EXPIRES_IN: '7d', GOOGLE_AUTH_ENABLED: 'false',
-    // This whole file runs with small limits, different so that each list is seen to follow its own
-    MAX_PARTY_SONGS: '3', MAX_PLAYLIST_SONGS: '4',
+    // This whole file runs with small limits, different so that each one is seen to follow its own setting
+    MAX_PARTY_SONGS: '3', MAX_PLAYLIST_SONGS: '4', THROTTLE_LIMIT: '2',
   });
   execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'migrate', 'deploy'], {
     env: process.env, stdio: 'pipe', timeout: 60000,
@@ -153,5 +153,21 @@ describe('The song limits come from MAX_PARTY_SONGS (3 here) and MAX_PLAYLIST_SO
     const snapshot = await app.get(PlaylistsService).snapshot(id);
     expect(snapshot.songs).toHaveLength(4);
     expect(snapshot.songsLength).toBe(6);
+  });
+});
+
+describe('The request limit comes from THROTTLE_LIMIT (2 here)', () => {
+  it('refuses the 3rd request to a route within a minute, counts each route apart, and leaves login its own limit', async () => {
+    // The real limiter for this test only: the others switch it off
+    throttling.mockRestore();
+    try {
+      for (let n = 0; n < 2; n++) expect((await request('GET', '/parties')).status).toBe(401);
+      expect((await request('GET', '/parties')).status).toBe(429);
+      expect((await request('GET', '/playlists')).status).toBe(401);
+      const body = { email: `${randomUUID()}@example.com`, password: 'Wrong-password-123!' };
+      for (let n = 0; n < 3; n++) expect((await request('POST', '/auth/login', body)).status).toBe(401);
+    } finally {
+      throttling = jest.spyOn(ThrottlerGuard.prototype, 'canActivate').mockResolvedValue(true);
+    }
   });
 });
