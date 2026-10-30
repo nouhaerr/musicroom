@@ -41,11 +41,11 @@ Agree on the shared HTTP/session client contract first: current user, authentica
 
 ## Branch workflow
 
-The shared starting branch is `web-auth`. The rooms developer can create a separate branch from it:
+The shared starting branch is `feat/web-auth-users-social`. The rooms developer can create a separate branch from it:
 
 ```sh
 git fetch origin
-git switch -c web-rooms origin/web-auth
+git switch -c feat/web-rooms origin/feat/web-auth-users-social
 ```
 
 Each developer commits their own feature changes. Coordinate changes to shared files and review integration before merging to main. This scaffold does not implement subscription or IoT bonuses.

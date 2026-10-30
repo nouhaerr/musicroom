@@ -2,7 +2,7 @@ import { openEmailInbox } from '../auth/open-email';
 import { acquireFacebookCredential } from '../auth/native-facebook';
 import { useAutoDismiss } from '../hooks/useAutoDismiss';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Image, ImageBackground, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Image, ImageBackground, KeyboardAvoidingView, Platform, Pressable, ScrollView as NativeScrollView, StyleSheet, Text, View } from 'react-native';
 // The page scroll of gesture-handler: its gestures referee knows it, so dragging a song can take the finger from it
 import { GestureHandlerRootView, ScrollView } from 'react-native-gesture-handler';
 import Animated, { useAnimatedRef } from 'react-native-reanimated';
@@ -186,7 +186,8 @@ function ResetPasswordScreen({ password, confirm, busy, passwordSubmitted, onPas
 }
 
 // The page scroll, animated: a list that drags its items can then scroll the page when an item reaches its edge
-const PageScroll = Animated.createAnimatedComponent(ScrollView);
+const PlaylistPageScroll = Animated.createAnimatedComponent(ScrollView);
+const NativePageScroll = Animated.createAnimatedComponent(NativeScrollView);
 
 function Sonora() {
   const pageScroll = useAnimatedRef();
@@ -389,6 +390,8 @@ function Sonora() {
   }
 
   const profile = !!user && screen !== 'settings' && screen !== 'reset' && screen !== 'verify';
+  // Only playlist drag-and-drop needs gesture-handler to coordinate page scrolling.
+  const PageScroll = profile && area === 'playlists' ? PlaylistPageScroll : NativePageScroll;
   const labels: Record<Screen, string> = { welcome: '', login: 'Log in', register: 'Create account', verify: 'Verify email', forgot: 'Get reset link', reset: 'Change password', settings: 'Save server' };
   return <SafeAreaView style={[s.safe, profile && { backgroundColor: '#08090d' }]}><StatusBar style="light" />
     <LegalDocuments document={legalDocument} onClose={() => setLegalDocument(null)} />
