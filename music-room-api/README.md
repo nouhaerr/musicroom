@@ -68,6 +68,7 @@ Routes, comportement de sécurité, pagination, migrations et tests A1–A5 :
 Tests Facebook et permissions : [guide Facebook Login](docs/FACEBOOK-LOGIN.md).
 État de la partie auth/social et recette restante : [bilan](docs/AUTH-USERS-STATUS.md).
 Protections et limites de déploiement : [note de sécurité](docs/SECURITY-AUTH.md).
+Salles, playlists, temps réel et catalogue : [note de sécurité musique](docs/SECURITY-MUSIC.md).
 Choix techniques : [justification](docs/TECH-CHOICES.md). Assistance IA : [note d’usage](docs/AI-USAGE.md).
 Montée en charge (V.7) : [mesures et nombre d'utilisateurs](docs/RAMP-UP.md).
 API (V.4) : [REST, JSON et documentation Swagger](docs/API.md).
