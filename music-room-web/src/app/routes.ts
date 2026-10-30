@@ -1,0 +1,16 @@
+export const featureRoutes = [
+  { path: '/auth/login', title: 'Log in', description: 'Email and social sign-in.' },
+  { path: '/auth/register', title: 'Create account', description: 'Registration and email verification.' },
+  { path: '/auth/verify-email', title: 'Verify email', description: 'Email verification links.' },
+  { path: '/auth/forgot-password', title: 'Forgot password', description: 'Request a password reset email.' },
+  { path: '/auth/reset-password', title: 'Reset password', description: 'Reset your password from an email link.' },
+  { path: '/profile', title: 'Your corner', description: 'Profile, privacy, music preferences and linked accounts.' },
+  { path: '/friends', title: 'Your people', description: 'Find people and manage friendship requests.' },
+  { path: '/devices', title: 'Devices', description: 'Manage devices attached to your account.' },
+  { path: '/invitations', title: 'Invitations', description: 'Room and playlist invitations.' },
+  { path: '/rooms', title: 'Rooms', description: 'Discover rooms, suggest tracks and vote together.' },
+  { path: '/rooms/:roomId', title: 'Room', description: 'Live queue, voting and playback.' },
+  { path: '/playlists', title: 'Playlists', description: 'Create and edit playlists together.' },
+  { path: '/playlists/:playlistId', title: 'Playlist', description: 'Tracks and collaborative editing.' },
+  { path: '/playlists/:playlistId/access', title: 'Access & people', description: 'Playlist visibility and collaborators.' },
+];

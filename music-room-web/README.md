@@ -1,0 +1,51 @@
+# Sonora web
+
+Responsive React + TypeScript client for the Music Room web bonus, built with Vite. It uses the existing NestJS API; this is not a Next.js project.
+
+## Run locally
+
+Use Node.js 24 LTS (the initial scaffold was checked with 24.18.0).
+
+```sh
+cd music-room-web
+npm ci
+cp .env.example .env
+npm run dev
+```
+
+Open http://localhost:5173. Start the backend separately from `music-room-api` with `make` when implementing API features. `VITE_API_URL` defaults to `http://localhost:3000`; Vite variables are public browser configuration, never secrets. On another device, localhost refers to that device.
+
+```sh
+npm run typecheck
+npm run build
+npm run preview
+```
+
+## What exists now
+
+A responsive navigation shell, home page, and clearly labelled placeholder routes. Authentication, API requests, session storage, devices and real-time features are **not implemented**. No placeholder simulates successful login or protects routes. The config helper is ready for the future HTTP client.
+
+Production hosting must serve `index.html` for browser routes (including email verification/reset links). `vite preview` is only a local build preview, not a production server.
+
+## Work split
+
+| Owner | Feature folders |
+| --- | --- |
+| Auth/users developer | `src/features/auth`, `profile`, `friends`, `devices`, `invitations`, `access` |
+| Rooms/music developer | `src/features/rooms`, `playlists`, `src/realtime` |
+| Coordinate together | `src/app`, `src/components`, `src/api`, `src/styles`, dependency files |
+
+Feature pages, components and endpoint adapters live inside their feature folder. Shared UI goes in `src/components/ui`; shared layout in `src/components/layout`. Replace placeholder elements in `src/app/App.tsx` as pages become functional. The playlist owner action should link to `/playlists/:playlistId/access`.
+
+Agree on the shared HTTP/session client contract first: current user, authenticated requests, refresh, logout, device registration and `X-Device-Id`, consistent errors. Reuse backend contracts and portable mobile logic where appropriate, but do not import Expo SecureStore or native Google/Facebook SDKs into the browser. Browser OAuth and session persistence need their own implementation and security review. Confirm web origins, redirect URLs and email links before testing OAuth.
+
+## Branch workflow
+
+The shared starting branch is `web-auth`. The rooms developer can create a separate branch from it:
+
+```sh
+git fetch origin
+git switch -c web-rooms origin/web-auth
+```
+
+Each developer commits their own feature changes. Coordinate changes to shared files and review integration before merging to main. This scaffold does not implement subscription or IoT bonuses.
