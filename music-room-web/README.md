@@ -27,7 +27,7 @@ Responsive navigation, email registration/login, resend verification, manual ver
 
 The portable mobile API client was copied into `src/api` with its session regression tests. Changes to that client must be coordinated with the mobile copy. Run `npm test` to check refresh serialization, logout races, authentication and device adapter behavior; these are mocked client tests, not browser acceptance tests.
 
-Browser sessions are **memory-only**: reload or tab closure signs out locally (the server session remains until expiry/revocation). No token is persisted in browser storage. Durable browser sessions, Google/Facebook browser SDK integration, WEB device registration and authenticated guards for future feature pages remain to implement. The backend currently accepts only IOS/ANDROID devices, so the browser does not pretend to be a mobile device.
+Browser sessions are **memory-only**: reload or tab closure signs out locally (the server session remains until expiry/revocation). No token is persisted in browser storage. Durable browser sessions, WEB device registration and authenticated guards for future feature pages remain to implement. The backend currently accepts only IOS/ANDROID devices, so the browser does not pretend to be a mobile device.
 
 Existing emails still point to the backend's mobile landing pages. Paste the emailed URL into the web verification/reset form to use it here. Direct web links with `?token=` are supported, but email routing must be configured separately before claiming an end-to-end web email flow.
 
@@ -43,7 +43,7 @@ Production hosting must serve `index.html` for browser routes (including email v
 
 Feature pages, components and endpoint adapters live inside their feature folder. Shared UI goes in `src/components/ui`; shared layout in `src/components/layout`. Replace placeholder elements in `src/app/App.tsx` as pages become functional. The playlist owner action should link to `/playlists/:playlistId/access`.
 
-Agree on the shared HTTP/session client contract first: current user, authenticated requests, refresh, logout, device registration and `X-Device-Id`, consistent errors. Reuse backend contracts and portable mobile logic where appropriate, but do not import Expo SecureStore or native Google/Facebook SDKs into the browser. Browser OAuth and session persistence need their own implementation and security review. Confirm web origins, redirect URLs and email links before testing OAuth.
+Agree on the shared HTTP/session client contract first: current user, authenticated requests, refresh, logout, device registration and `X-Device-Id`, consistent errors. Reuse backend contracts and portable mobile logic where appropriate, but do not import Expo SecureStore or native Google/Facebook SDKs into the browser. Browser OAuth is integrated with the provider SDKs; see `src/features/auth/SOCIAL-LOGIN.md` for console setup and remaining live tests. Durable session persistence remains to implement. Confirm web origins, redirect URLs and email links before testing OAuth.
 
 ## Branch workflow
 
@@ -55,3 +55,5 @@ git switch -c feat/web-rooms origin/feat/web-auth-users-social
 ```
 
 Each developer commits their own feature changes. Coordinate changes to shared files and review integration before merging to main. This scaffold does not implement subscription or IoT bonuses.
+
+Google/Facebook buttons now exchange browser credentials with the backend. Their public IDs must be configured in `.env`, and website origins authorized in the provider consoles. Existing-account linking UI remains pending.

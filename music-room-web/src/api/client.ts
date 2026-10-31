@@ -84,7 +84,7 @@ export class ApiClient {
   private deviceInfo?: DeviceInfo;
   private readonly installationIdFactory?: () => string;
 
-  constructor(baseUrl: string, storage: TokenStorage, fetcher: typeof fetch = fetch, deviceInfo?: DeviceInfo, installationIdFactory?: () => string) {
+  constructor(baseUrl: string, storage: TokenStorage, fetcher: typeof fetch = (...args) => globalThis.fetch(...args), deviceInfo?: DeviceInfo, installationIdFactory?: () => string) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.storage = storage;
     this.fetcher = fetcher;

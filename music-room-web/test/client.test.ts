@@ -222,3 +222,17 @@ test('keeps the installation identity when switching accounts or backend aliases
   assert.equal(new Set(registrations.map(r => r.installationId)).size, 1);
   assert.ok(registrations.every(r => r.model === 'Samsung Galaxy A54'));
 });
+
+test('default browser transport calls fetch with the global receiver', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async function (this: unknown) {
+    assert.equal(this, globalThis);
+    return json(session());
+  };
+  try {
+    const storage: TokenStorage = { getItem: async () => null, setItem: async () => {}, deleteItem: async () => {} };
+    const client = new ApiClient(origin, storage);
+    await client.login(user.email, 'test-password');
+    assert.equal(client.user?.id, user.id);
+  } finally { globalThis.fetch = original; }
+});
